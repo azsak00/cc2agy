@@ -6,11 +6,11 @@ import argparse
 import sys
 from pathlib import Path
 
-from src.cc2agy import __version__
-from src.cc2agy.converters.commands import convert_command_file, convert_commands_directory
-from src.cc2agy.converters.mcp import convert_mcp_file
-from src.cc2agy.converters.rules import convert_rules_file
-from src.cc2agy.detector import detect_claude_project
+from cc2agy import __version__
+from cc2agy.converters.commands import convert_command_file, convert_commands_directory
+from cc2agy.converters.mcp import convert_mcp_file
+from cc2agy.converters.rules import convert_rules_file
+from cc2agy.detector import detect_claude_project
 
 
 def build_parser() -> argparse.ArgumentParser:

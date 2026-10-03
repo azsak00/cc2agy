@@ -4,8 +4,13 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.cc2agy.cli import main
-from src.cc2agy.converters.commands import (
+import sys
+SRC_DIR = str(Path(__file__).resolve().parent.parent / "src")
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
+
+from cc2agy.cli import main
+from cc2agy.converters.commands import (
     adapt_prompt_arguments,
     convert_command_file,
     convert_commands_directory,
@@ -14,7 +19,7 @@ from src.cc2agy.converters.commands import (
     parse_frontmatter,
     sanitize_skill_name,
 )
-from src.cc2agy.detector import detect_claude_project
+from cc2agy.detector import detect_claude_project
 
 
 class TestCommandsConverter(unittest.TestCase):

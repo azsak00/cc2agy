@@ -5,19 +5,24 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.cc2agy.cli import main
-from src.cc2agy.converters.mcp import (
+import sys
+SRC_DIR = str(Path(__file__).resolve().parent.parent / "src")
+if SRC_DIR not in sys.path:
+    sys.path.insert(0, SRC_DIR)
+
+from cc2agy.cli import main
+from cc2agy.converters.mcp import (
     convert_mcp_config,
     convert_mcp_file,
     extract_servers_dict,
     normalize_server_entry,
 )
-from src.cc2agy.converters.rules import (
+from cc2agy.converters.rules import (
     MAX_RULE_FILE_BYTES,
     clean_rules_content,
     convert_rules_file,
 )
-from src.cc2agy.detector import detect_claude_project
+from cc2agy.detector import detect_claude_project
 
 
 class TestRulesConverter(unittest.TestCase):
