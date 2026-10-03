@@ -52,7 +52,7 @@ Clone the repository and run directly with Python:
 
 ```bash
 # Clone the repository
-git clone https://github.com/<your-username>/cc2agy.git
+git clone https://github.com/azsak00/cc2agy.git
 cd cc2agy
 
 # Inspect discovered Claude Code resources in a plugin or folder

@@ -40,5 +40,10 @@ classifiers = [
 [project.scripts]
 cc2agy = "cc2agy.cli:main"
 
+[project.urls]
+Homepage = "https://github.com/azsak00/cc2agy"
+Repository = "https://github.com/azsak00/cc2agy.git"
+"Bug Tracker" = "https://github.com/azsak00/cc2agy/issues"
+
 [tool.setuptools.packages.find]
 where = ["src"]

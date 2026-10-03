@@ -6,9 +6,17 @@ import unittest
 from pathlib import Path
 
 import sys
+ROOT_DIR = str(Path(__file__).resolve().parent.parent)
 SRC_DIR = str(Path(__file__).resolve().parent.parent / "src")
-if SRC_DIR not in sys.path:
-    sys.path.insert(0, SRC_DIR)
+
+while ROOT_DIR in sys.path:
+    sys.path.remove(ROOT_DIR)
+while "" in sys.path:
+    sys.path.remove("")
+
+if SRC_DIR in sys.path:
+    sys.path.remove(SRC_DIR)
+sys.path.insert(0, SRC_DIR)
 
 from cc2agy.cli import main
 from cc2agy.converters.mcp import (
