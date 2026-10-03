@@ -103,14 +103,19 @@ def detect_claude_project(target_path: Path) -> ClaudeProjectInfo:
     if not target_path.exists():
         return info
 
-    # If target is directly a single command or rules markdown file
-    if target_path.is_file() and target_path.suffix.lower() == ".md":
-        if target_path.name.lower() == "claude.md":
-            info.rules_file = target_path
-        else:
-            info.command_files.append(target_path)
-            info.commands_dirs.append(target_path.parent)
-        return info
+    # If target is directly a single command, rules, or MCP config file
+    if target_path.is_file():
+        if target_path.suffix.lower() == ".md":
+            if target_path.name.lower() == "claude.md":
+                info.rules_file = target_path
+            else:
+                info.command_files.append(target_path)
+                info.commands_dirs.append(target_path.parent)
+            return info
+        elif target_path.suffix.lower() == ".json":
+            if "mcp" in target_path.name.lower() or "claude" in target_path.name.lower():
+                info.mcp_file = target_path
+                return info
 
     # 1. Discover command directories recursively and exhaustively
     candidate_cmd_dirs = [
