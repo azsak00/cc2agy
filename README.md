@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)]()
 [![Platform: Win | Mac | Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)]()
-[![Tests: 34 Passing](https://img.shields.io/badge/tests-34%20passed-brightgreen.svg)]()
+[![Tests: 41 Passing](https://img.shields.io/badge/tests-41%20passed-brightgreen.svg)]()
 [![Antigravity 2.0 Ready](https://img.shields.io/badge/Antigravity-2.0%20Ready-blueviolet.svg)](https://antigravity.google)
 
 ---
@@ -26,6 +26,8 @@ Legacy bridges attempted to convert commands into Antigravity *workflows* (`.md`
 
 **cc2agy** is a modern, open-source bridge tool written in **pure Python** (standard library only, zero external runtime dependencies) that translates Claude Code workflows and plugins directly into canonical Antigravity resources:
 
+- 📦 **Full Plugin Mode (`plugins/<name>/`):** Packages entire Claude Code plugins into official Antigravity plugins, generating canonical `plugin.json` manifests, internal `rules/AGENTS.md`, and preserving auxiliary directories (`scripts/`, `templates/`, `espec/`, `agents/`).
+- 🔄 **Lifecycle Hooks Migration:** Translates Claude Code hooks (`hooks/hooks.json`) into canonical Antigravity `hooks.json`, automatically mapping `SessionStart` ➔ `PreInvocation`, normalizing `Stop` handlers, and sanitizing path variables (`${CLAUDE_PLUGIN_ROOT}`).
 - 🪄 **Commands to Native Skills:** Converts Claude Code commands (`commands/*.md`) into full Antigravity **Skills** (`skills/<name>/SKILL.md`) with valid YAML frontmatter (`name`, `description`), preserving prompt parameters (`$1, $2, ...` and `$*`) while shielding currency signs (`$50`) and shell scripts (`awk`).
 - 📋 **Rules to Workspace Governance:** Converts `CLAUDE.md` files into clean, YAML-free `AGENTS.md` governance files, monitoring context budget limits (< 24 KB) and adding non-intrusive provenance comments.
 - 🔌 **MCP Server Normalization:** Translates `.mcp.json` and `.claude.json` into canonical `mcp_config.json` configurations with the required `"mcpServers"` root key, mapping remote SSE endpoints to `serverUrl` and detecting unescaped plaintext tokens.
@@ -37,10 +39,13 @@ Legacy bridges attempted to convert commands into Antigravity *workflows* (`.md`
 
 | Claude Code Resource | Source Format | Canonical Antigravity Target | Conversion Behavior |
 | :--- | :--- | :--- | :--- |
+| **Full Plugin Package** | Plugin folder (`.claude-plugin/plugin.json`) | `plugins/<name>/` | Creates canonical `plugin.json`, packages all skills, rules, MCP configs, hooks, and preserves auxiliary trees (`scripts/`, `templates/`, `espec/`). |
+| **Lifecycle Hooks** | `hooks/hooks.json` | `hooks.json` | Maps `SessionStart` to `PreInvocation`, unwraps flat handlers for `Stop`, and sanitizes `${CLAUDE_PLUGIN_ROOT}` variables to relative paths. |
 | **User Slash Commands** | `commands/<name>.md` | `skills/<name>/SKILL.md` | Generates modern Antigravity Skills with YAML frontmatter (`name`, `description`), enabling native slash-command invocation (`/<command>`). |
-| **Modular Skills** | `skills/<name>/SKILL.md` | `skills/<name>/SKILL.md` | Preserves folder structure, auxiliary scripts (`scripts/`), and progressive disclosure references (`references/`). |
-| **Project Rules** | `CLAUDE.md` | `AGENTS.md` | Strips unsupported YAML frontmatter, formats as imperative governance rules, and warns if context budget exceeds 24 KB. |
+| **Modular Skills** | `skills/<name>/SKILL.md` | `skills/<name>/SKILL.md` | Preserves folder structure, auxiliary scripts (`scripts/`), progressive disclosure references (`references/`), and adapts relative links. |
+| **Project Rules** | `CLAUDE.md` | `AGENTS.md` or `rules/AGENTS.md` | Strips unsupported YAML frontmatter, formats as imperative governance rules, and warns if context budget exceeds 24 KB. |
 | **MCP Server Config** | `.mcp.json` / `.claude.json` | `mcp_config.json` | Normalizes server definitions into standard root `{"mcpServers": ...}`, maps SSE `url`/`endpoint` to `serverUrl`, and alerts on plaintext credentials. |
+
 
 ---
 
@@ -105,9 +110,11 @@ python cc2agy.py convert <target> [OPTIONS]
 | :--- | :--- | :--- | :--- |
 | `--dest` | `-d` | `./output` | Destination directory where converted Antigravity assets will be saved. |
 | `--overwrite` | | `False` | Overwrite existing files in destination directory without error. |
-| `--skills-only` | | `False` | Convert only commands into Antigravity Skills. |
+| `--plugin` | | `False` | Package target as a full Antigravity plugin (`plugins/<name>/`). |
+| `--skills-only` | | `False` | Convert only commands/skills into Antigravity Skills. |
 | `--rules-only` | | `False` | Convert only `CLAUDE.md` into `AGENTS.md` governance rules. |
 | `--mcp-only` | | `False` | Convert only MCP configuration into `mcp_config.json`. |
+| `--hooks-only` | | `False` | Convert only lifecycle hooks into canonical `hooks.json`. |
 | `--version` | `-v` | | Show current cc2agy version. |
 
 ---
@@ -144,6 +151,19 @@ python cc2agy.py convert path/to/CLAUDE.md --dest ./ --rules-only
 **Result:**
 - Generates `AGENTS.md` with clean Markdown rules, stripped YAML frontmatter, and context tracking.
 
+### Example 4: Full Complex Plugin Migration with Scripts (`adv-cowork`)
+Convert an advanced, multi-component plugin containing skills, hooks, and Python scripts:
+
+```bash
+python cc2agy.py convert path/to/adv-cowork --dest .agents/ --overwrite
+```
+**Result:**
+- Generates `.agents/plugins/adv-cowork/plugin.json` (canonical manifest)
+- Generates `.agents/plugins/adv-cowork/hooks.json` (with `SessionStart` mapped to `PreInvocation` and flat `Stop` handlers)
+- Migrates 9 modular skills to `.agents/plugins/adv-cowork/skills/<name>/SKILL.md`
+- Preserves auxiliary directories: `scripts/`, `templates/`, `espec/`, `agents/`
+- Sanitizes `${CLAUDE_PLUGIN_ROOT}` across skills and hooks to relative paths
+
 ---
 
 ## 📂 Antigravity Destination Guide
@@ -152,10 +172,12 @@ Where should you place converted assets in Google Antigravity?
 
 | Scope | Resource Type | Target Path in Antigravity | Description |
 | :--- | :--- | :--- | :--- |
-| **Workspace Scope**<br>*(Active Project Only)* | **Skills** | `<workspace>/.agents/skills/<name>/SKILL.md` | Available only in the current workspace. |
+| **Workspace Scope**<br>*(Active Project Only)* | **Plugins** | `<workspace>/.agents/plugins/<name>/` | Full modular plugin packages. |
+| | **Skills** | `<workspace>/.agents/skills/<name>/SKILL.md` | Available only in the current workspace. |
 | | **Rules** | `<workspace>/AGENTS.md` | Active governance for the current workspace. |
 | | **MCP** | `<workspace>/.agents/mcp_config.json` | Project-specific MCP servers. |
-| **Global Scope**<br>*(All Workspaces)* | **Skills** | `~/.gemini/config/skills/<name>/SKILL.md` | Available across all workspaces and conversations. |
+| **Global Scope**<br>*(All Workspaces)* | **Plugins** | `~/.gemini/config/plugins/<name>/` | Global plugins loaded in every workspace. |
+| | **Skills** | `~/.gemini/config/skills/<name>/SKILL.md` | Available across all workspaces and conversations. |
 | | **MCP** | `~/.gemini/config/mcp_config.json` | Global MCP servers active everywhere. |
 
 > **Note on Windows:** `~` resolves to `C:\Users\<username>`.
@@ -164,7 +186,7 @@ Where should you place converted assets in Google Antigravity?
 
 ## 🧪 Automated Test Suite
 
-`cc2agy` includes 34 automated unit tests covering command parsing, modular skills synchronization, YAML multiline scalar handling, Unicode sanitization, currency symbol shielding, rule cleaning, MCP schema normalization, and CLI workflows.
+`cc2agy` includes 41 automated unit tests covering command parsing, modular skills synchronization, full plugin packaging, lifecycle hooks conversion, path variable sanitization, YAML multiline scalar handling, Unicode sanitization, currency symbol shielding, rule cleaning, MCP schema normalization, and CLI workflows.
 
 Run the test suite using Python's native `unittest` runner:
 
@@ -172,7 +194,7 @@ Run the test suite using Python's native `unittest` runner:
 python -m unittest discover tests -v
 ```
 
-All 34 tests run in under 0.25 seconds with zero external test runners required.
+All 41 tests run in under 0.3 seconds with zero external test runners required.
 
 ---
 
@@ -182,21 +204,25 @@ All 34 tests run in under 0.25 seconds with zero external test runners required.
 cc2agy/
 ├── src/
 │   └── cc2agy/
-│       ├── __init__.py           # Package version (0.1.0)
+│       ├── __init__.py           # Package version (0.2.0)
 │       ├── __main__.py           # Module execution entrypoint
 │       ├── cli.py                # Command-line interface & argument parsing
 │       ├── detector.py           # Auto-detection of Claude Code assets
 │       └── converters/
 │           ├── __init__.py       # Package exports
 │           ├── commands.py       # Commands -> Skills converter
-│           ├── skills.py         # Modular Skills migrator & sync
+│           ├── hooks.py          # Lifecycle Hooks converter & sanitization
+│           ├── mcp.py            # .mcp.json -> mcp_config.json converter
+│           ├── plugin.py         # Full Plugin packager & migrator
 │           ├── rules.py          # CLAUDE.md -> AGENTS.md converter
-│           └── mcp.py            # .mcp.json -> mcp_config.json converter
+│           └── skills.py         # Modular Skills migrator & sync
 ├── tests/
 │   ├── __init__.py               # Test path initialization & sys.path isolation
 │   ├── test_commands.py          # Command converter & detector tests
-│   ├── test_skills.py            # Modular skills migrator tests
-│   └── test_rules_mcp.py         # Rules, MCP & CLI integration tests
+│   ├── test_hooks.py             # Lifecycle hooks conversion tests
+│   ├── test_plugin.py            # Full plugin packager tests
+│   ├── test_rules_mcp.py         # Rules, MCP & CLI integration tests
+│   └── test_skills.py            # Modular skills migrator tests
 ├── .agents/
 │   └── rules/
 │       └── AGENTS.md             # Canonical workspace governance rules
@@ -223,24 +249,26 @@ Verifique o que o plugin contém antes de converter:
 python cc2agy.py inspect "caminho/para/pasta-do-plugin"
 ```
 
-#### Passo 2: Converter para seu projeto atual (Escopo do Workspace)
-Gere as Skills e regras diretamente na pasta `.agents` do seu projeto:
+#### Passo 2: Converter um plugin completo (com scripts e hooks)
+Gere a estrutura canônica de plugin (`plugins/<nome>/`) preservando scripts e ganchos de ciclo de vida:
 ```bash
-python cc2agy.py convert "caminho/para/pasta-do-plugin" --dest .agents/skills/ --overwrite
+python cc2agy.py convert "caminho/para/pasta-do-plugin" --dest .agents/ --overwrite
 ```
 
-#### Passo 3: Ou converter para uso global em todos os seus projetos
-Se quiser que o comando funcione em qualquer conversa do Antigravity na sua máquina:
+#### Passo 3: Ou extrair apenas comandos e skills soltas
+Se quiser extrair somente as skills para a pasta de skills do projeto ou global:
 ```bash
-python cc2agy.py convert "caminho/para/pasta-do-plugin" --dest C:/Users/seu_usuario/.gemini/config/skills/ --overwrite
+python cc2agy.py convert "caminho/para/pasta-do-plugin" --dest .agents/skills/ --skills-only --overwrite
 ```
 
 ### Principais Opções de Conversão
 - `--dest <caminho>`: Define onde os arquivos convertidos serão salvos.
 - `--overwrite`: Permite atualizar com segurança arquivos que já existam.
-- `--skills-only`: Converte apenas os comandos/skills.
+- `--plugin`: Força o empacotamento no formato completo de Plugin do Antigravity (`plugins/<nome>/`).
+- `--skills-only`: Converte apenas comandos/skills.
 - `--rules-only`: Converte apenas o arquivo de instruções `CLAUDE.md` em `AGENTS.md`.
 - `--mcp-only`: Converte apenas as configurações de servidores MCP.
+- `--hooks-only`: Converte apenas os ganchos de ciclo de vida para `hooks.json`.
 
 ---
 

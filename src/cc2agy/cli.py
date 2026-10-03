@@ -8,7 +8,9 @@ from pathlib import Path
 
 from cc2agy import __version__
 from cc2agy.converters.commands import convert_command_file, convert_commands_directory
+from cc2agy.converters.hooks import convert_hooks_file
 from cc2agy.converters.mcp import convert_mcp_file
+from cc2agy.converters.plugin import convert_plugin
 from cc2agy.converters.rules import convert_rules_file
 from cc2agy.converters.skills import migrate_skill_folder, migrate_skills_directory
 from cc2agy.detector import detect_claude_project
@@ -61,6 +63,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Allow overwriting existing files in destination."
     )
     convert_parser.add_argument(
+        "--plugin",
+        action="store_true",
+        default=False,
+        help="Package target into a full Antigravity plugin (plugins/<name>/)."
+    )
+    convert_parser.add_argument(
         "--skills-only",
         action="store_true",
         default=False,
@@ -78,6 +86,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Convert only MCP server configurations."
     )
+    convert_parser.add_argument(
+        "--hooks-only",
+        action="store_true",
+        default=False,
+        help="Convert only lifecycle hooks configurations."
+    )
 
     return parser
 
@@ -92,28 +106,56 @@ def handle_convert(
     target: Path,
     dest: Path,
     overwrite: bool,
+    plugin: bool = False,
     skills_only: bool = False,
     rules_only: bool = False,
-    mcp_only: bool = False
+    mcp_only: bool = False,
+    hooks_only: bool = False,
 ) -> int:
     info = detect_claude_project(target)
     if not info.is_claude_project:
         print(f"[!] No Claude Code resources found at: {target}", file=sys.stderr)
         return 1
 
-    # If any specific filter flag is set, only convert requested types. Otherwise convert all.
-    any_filter = skills_only or rules_only or mcp_only
-    do_skills = skills_only if any_filter else True
-    do_rules = rules_only if any_filter else True
-    do_mcp = mcp_only if any_filter else True
+    # Check if target should be packaged as a full plugin
+    any_filter = skills_only or rules_only or mcp_only or hooks_only
+    is_plugin_conversion = plugin or (info.is_plugin and not any_filter)
 
     dest.mkdir(parents=True, exist_ok=True)
     print(f"[*] Converting Claude Code resources from: {target}")
     print(f"[*] Destination: {dest}")
 
+    if is_plugin_conversion and target.is_dir():
+        try:
+            plugin_path, p_summary = convert_plugin(target, dest, overwrite=overwrite)
+            print(f"  [+] Full Plugin packaged: {p_summary['plugin_name']} -> {plugin_path}")
+            print(f"      - Manifest: plugin.json")
+            print(f"      - Skills/Commands: {p_summary['skills_migrated']}")
+            print(f"      - Rules: {p_summary['rules_migrated']}")
+            print(f"      - MCP configs: {p_summary['mcp_migrated']}")
+            print(f"      - Lifecycle Hooks: {p_summary['hooks_migrated']}")
+            if p_summary["auxiliary_dirs_copied"]:
+                print(f"      - Auxiliary dirs: {', '.join(p_summary['auxiliary_dirs_copied'])}")
+            for w in p_summary["warnings"]:
+                print(f"      [!] Warning: {w}")
+            print(f"\n[OK] Plugin package complete: {p_summary['plugin_name']}")
+            return 0
+        except FileExistsError as e:
+            print(f"  [!] Skipped existing plugin (use --overwrite to replace): {e}", file=sys.stderr)
+            return 1
+        except Exception as e:
+            print(f"  [-] Plugin conversion failed: {e}", file=sys.stderr)
+            return 1
+
+    do_skills = skills_only if any_filter else True
+    do_rules = rules_only if any_filter else True
+    do_mcp = mcp_only if any_filter else True
+    do_hooks = hooks_only if any_filter else True
+
     converted_skills = 0
     converted_rules = 0
     converted_mcp = 0
+    converted_hooks = 0
 
     # 1. Handle single-file target
     if target.is_file():
@@ -139,6 +181,17 @@ def handle_convert(
                     converted_mcp += 1
                 except FileExistsError as e:
                     print(f"  [!] Skipped existing MCP file (use --overwrite to replace): {e}", file=sys.stderr)
+        # Hooks file
+        elif info.hooks_file:
+            if do_hooks:
+                try:
+                    res, warnings = convert_hooks_file(info.hooks_file, dest, overwrite=overwrite)
+                    print(f"  [+] Hooks generated: {res.name} -> {res}")
+                    for w in warnings:
+                        print(f"      [!] Warning: {w}")
+                    converted_hooks += 1
+                except FileExistsError as e:
+                    print(f"  [!] Skipped existing hooks file (use --overwrite to replace): {e}", file=sys.stderr)
         # Command file
         elif info.command_files:
             if do_skills:
@@ -205,9 +258,21 @@ def handle_convert(
             except FileExistsError as e:
                 print(f"  [!] Skipped existing MCP file (use --overwrite to replace): {e}", file=sys.stderr)
 
+        # Convert Hooks to hooks.json
+        if do_hooks and info.has_hooks and info.hooks_file:
+            try:
+                res, warnings = convert_hooks_file(info.hooks_file, dest, overwrite=overwrite)
+                print(f"  [+] Hooks generated: {res.name} -> {res}")
+                for w in warnings:
+                    print(f"      [!] Warning: {w}")
+                converted_hooks += 1
+            except FileExistsError as e:
+                print(f"  [!] Skipped existing hooks file (use --overwrite to replace): {e}", file=sys.stderr)
+
     print(
         f"\n[OK] Conversion completed: {converted_skills} skill(s), "
-        f"{converted_rules} rule(s), {converted_mcp} MCP config(s) generated."
+        f"{converted_rules} rule(s), {converted_mcp} MCP config(s), "
+        f"{converted_hooks} hooks config(s) generated."
     )
     return 0
 
@@ -227,12 +292,15 @@ def main(args: list[str] | None = None) -> int:
             target=parsed_args.target,
             dest=parsed_args.dest,
             overwrite=parsed_args.overwrite,
+            plugin=parsed_args.plugin,
             skills_only=parsed_args.skills_only,
             rules_only=parsed_args.rules_only,
             mcp_only=parsed_args.mcp_only,
+            hooks_only=parsed_args.hooks_only,
         )
 
     return 0
+
 
 
 if __name__ == "__main__":

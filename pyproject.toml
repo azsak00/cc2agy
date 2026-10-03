@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cc2agy"
-version = "0.1.0"
+version = "0.2.0"
 description = "Bridge and migration tool from Claude Code (commands, skills, MCP, rules) to Google Antigravity"
 readme = "README.md"
 requires-python = ">=3.10"

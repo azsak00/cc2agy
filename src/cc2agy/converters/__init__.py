@@ -5,7 +5,9 @@ from .commands import (
     convert_commands_directory,
     sanitize_skill_name,
 )
+from .hooks import convert_hooks_data, convert_hooks_file
 from .mcp import convert_mcp_config, convert_mcp_file
+from .plugin import convert_plugin
 from .rules import clean_rules_content, convert_rules_file
 from .skills import migrate_skill_folder, migrate_skills_directory
 
@@ -19,4 +21,8 @@ __all__ = [
     "convert_mcp_config",
     "migrate_skill_folder",
     "migrate_skills_directory",
+    "convert_hooks_file",
+    "convert_hooks_data",
+    "convert_plugin",
 ]
+

@@ -37,6 +37,8 @@ class ClaudeProjectInfo:
     rules_file: Optional[Path] = None
     mcp_file: Optional[Path] = None
     plugin_manifest: Optional[Path] = None
+    hooks_file: Optional[Path] = None
+    auxiliary_dirs: List[Path] = field(default_factory=list)
 
     @property
     def has_commands(self) -> bool:
@@ -55,13 +57,22 @@ class ClaudeProjectInfo:
         return self.skills_dir is not None and self.skills_dir.exists()
 
     @property
+    def has_hooks(self) -> bool:
+        return self.hooks_file is not None and self.hooks_file.exists()
+
+    @property
+    def is_plugin(self) -> bool:
+        return self.plugin_manifest is not None and self.plugin_manifest.exists()
+
+    @property
     def is_claude_project(self) -> bool:
         return (
             self.has_commands
             or self.has_rules
             or self.has_mcp
             or self.has_skills
-            or self.plugin_manifest is not None
+            or self.has_hooks
+            or self.is_plugin
         )
 
     def summary(self) -> str:
@@ -110,6 +121,13 @@ class ClaudeProjectInfo:
         if self.plugin_manifest:
             lines.append(f"    - Plugin Manifest at: {self.plugin_manifest.name}")
 
+        if self.has_hooks:
+            lines.append(f"    - Lifecycle Hooks at: {self.hooks_file.name}")
+
+        if self.auxiliary_dirs:
+            aux_str = ", ".join(d.name for d in self.auxiliary_dirs)
+            lines.append(f"    - Auxiliary Plugin Directories ({len(self.auxiliary_dirs)}): [{aux_str}]")
+
         return "\n".join(lines)
 
 
@@ -121,7 +139,7 @@ def detect_claude_project(target_path: Path) -> ClaudeProjectInfo:
     if not target_path.exists():
         return info
 
-    # If target is directly a single command, rules, or MCP config file
+    # If target is directly a single command, rules, MCP config, or hooks file
     if target_path.is_file():
         if target_path.suffix.lower() == ".md":
             if target_path.name.lower() == "claude.md":
@@ -133,6 +151,12 @@ def detect_claude_project(target_path: Path) -> ClaudeProjectInfo:
         elif target_path.suffix.lower() == ".json":
             if "mcp" in target_path.name.lower() or "claude" in target_path.name.lower():
                 info.mcp_file = target_path
+                return info
+            elif "hook" in target_path.name.lower():
+                info.hooks_file = target_path
+                return info
+            elif "plugin" in target_path.name.lower() or "manifest" in target_path.name.lower():
+                info.plugin_manifest = target_path
                 return info
 
     # 1. Discover command directories recursively and exhaustively
@@ -185,7 +209,7 @@ def detect_claude_project(target_path: Path) -> ClaudeProjectInfo:
             break
 
     # 5. Discover plugin manifest
-    for s_dir in [target_path, target_path / ".claude"]:
+    for s_dir in [target_path, target_path / ".claude-plugin", target_path / ".claude"]:
         for mname in ["plugin.json", "manifest.json"]:
             found_manifest = _find_case_insensitive(s_dir, mname)
             if found_manifest:
@@ -193,5 +217,23 @@ def detect_claude_project(target_path: Path) -> ClaudeProjectInfo:
                 break
         if info.plugin_manifest:
             break
+
+    # 6. Discover lifecycle hooks (hooks.json, etc.)
+    search_dirs_hooks = [target_path / "hooks", target_path, target_path / ".claude"]
+    for h_dir in search_dirs_hooks:
+        found_hooks = _find_case_insensitive(h_dir, "hooks.json")
+        if found_hooks:
+            info.hooks_file = found_hooks
+            break
+
+    # 7. Discover auxiliary plugin directories
+    if target_path.is_dir():
+        known_aux = {"scripts", "templates", "espec", "agents", "hooks", "resources", "references", "docs"}
+        try:
+            for item in sorted(target_path.iterdir()):
+                if item.is_dir() and item.name.lower() in known_aux:
+                    info.auxiliary_dirs.append(item)
+        except (PermissionError, OSError):
+            pass
 
     return info
