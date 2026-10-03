@@ -17,6 +17,7 @@ from cc2agy.converters.hooks import convert_hooks_file
 from cc2agy.converters.mcp import convert_mcp_file
 from cc2agy.converters.rules import convert_rules_file
 from cc2agy.converters.skills import migrate_skills_directory
+from cc2agy.detector import _find_case_insensitive
 
 
 AUXILIARY_DIRS = {
@@ -28,6 +29,7 @@ AUXILIARY_DIRS = {
     "resources",
     "references",
     "docs",
+    "context",
 }
 
 
@@ -256,5 +258,17 @@ def convert_plugin(
                 summary["auxiliary_dirs_copied"].append(item.name)
             except Exception as e:
                 summary["warnings"].append(f"Failed to copy auxiliary directory '{item.name}': {e}")
+
+    # 9. Copy auxiliary root documentation / license files
+    auxiliary_files = ["README.md", "LICENSE", "LICENSE.md", "CHANGELOG.md"]
+    for aux_name in auxiliary_files:
+        aux_src = _find_case_insensitive(source_dir, aux_name)
+        if aux_src and aux_src.is_file():
+            aux_dest = target_plugin_dir / aux_src.name
+            if not aux_dest.exists() or overwrite:
+                try:
+                    shutil.copy2(aux_src, aux_dest)
+                except Exception as e:
+                    summary["warnings"].append(f"Failed to copy auxiliary file '{aux_src.name}': {e}")
 
     return target_plugin_dir, summary

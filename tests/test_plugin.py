@@ -83,6 +83,10 @@ class TestPluginConverter(unittest.TestCase):
             (source_plugin / "templates").mkdir()
             (source_plugin / "templates" / "template.txt").write_text("Hello template", encoding="utf-8")
 
+            (source_plugin / "context").mkdir()
+            (source_plugin / "context" / "persona.md").write_text("Default persona", encoding="utf-8")
+            (source_plugin / "README.md").write_text("# Mock Plugin Readme", encoding="utf-8")
+
             # Convert plugin
             plugin_dir, summary = convert_plugin(source_plugin, dest_root, overwrite=True)
 
@@ -93,9 +97,11 @@ class TestPluginConverter(unittest.TestCase):
             self.assertEqual(summary["hooks_migrated"], 1)
             self.assertIn("scripts", summary["auxiliary_dirs_copied"])
             self.assertIn("templates", summary["auxiliary_dirs_copied"])
+            self.assertIn("context", summary["auxiliary_dirs_copied"])
 
             # Verify directory output
             self.assertTrue((plugin_dir / "plugin.json").exists())
+            self.assertTrue((plugin_dir / "README.md").exists())
             self.assertTrue((plugin_dir / "mcp_config.json").exists())
             self.assertTrue((plugin_dir / "hooks.json").exists())
             self.assertTrue((plugin_dir / "rules" / "AGENTS.md").exists())
@@ -103,6 +109,7 @@ class TestPluginConverter(unittest.TestCase):
             self.assertTrue((plugin_dir / "skills" / "linter" / "SKILL.md").exists())
             self.assertTrue((plugin_dir / "scripts" / "lint.py").exists())
             self.assertTrue((plugin_dir / "templates" / "template.txt").exists())
+            self.assertTrue((plugin_dir / "context" / "persona.md").exists())
             self.assertTrue((plugin_dir / "hooks" / "init.sh").exists())
             # Ensure hooks.json was moved to root and removed from hooks/ subfolder
             self.assertFalse((plugin_dir / "hooks" / "hooks.json").exists())

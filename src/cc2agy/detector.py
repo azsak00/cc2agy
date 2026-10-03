@@ -228,7 +228,17 @@ def detect_claude_project(target_path: Path) -> ClaudeProjectInfo:
 
     # 7. Discover auxiliary plugin directories
     if target_path.is_dir():
-        known_aux = {"scripts", "templates", "espec", "agents", "hooks", "resources", "references", "docs"}
+        known_aux = {
+            "scripts",
+            "templates",
+            "espec",
+            "agents",
+            "hooks",
+            "resources",
+            "references",
+            "docs",
+            "context",
+        }
         try:
             for item in sorted(target_path.iterdir()):
                 if item.is_dir() and item.name.lower() in known_aux:
