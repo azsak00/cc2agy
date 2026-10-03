@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)]()
 [![Platform: Win | Mac | Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)]()
-[![Tests: 29 Passing](https://img.shields.io/badge/tests-29%20passed-brightgreen.svg)]()
+[![Tests: 34 Passing](https://img.shields.io/badge/tests-34%20passed-brightgreen.svg)]()
 [![Antigravity 2.0 Ready](https://img.shields.io/badge/Antigravity-2.0%20Ready-blueviolet.svg)](https://antigravity.google)
 
 ---
@@ -164,7 +164,7 @@ Where should you place converted assets in Google Antigravity?
 
 ## 🧪 Automated Test Suite
 
-`cc2agy` includes 29 automated unit tests covering command parsing, YAML multiline scalar handling, Unicode sanitization, currency symbol shielding, rule cleaning, MCP schema normalization, and CLI workflows.
+`cc2agy` includes 34 automated unit tests covering command parsing, modular skills synchronization, YAML multiline scalar handling, Unicode sanitization, currency symbol shielding, rule cleaning, MCP schema normalization, and CLI workflows.
 
 Run the test suite using Python's native `unittest` runner:
 
@@ -172,7 +172,7 @@ Run the test suite using Python's native `unittest` runner:
 python -m unittest discover tests -v
 ```
 
-All 29 tests run in under 0.15 seconds with zero external test runners required.
+All 34 tests run in under 0.25 seconds with zero external test runners required.
 
 ---
 
@@ -189,11 +189,13 @@ cc2agy/
 │       └── converters/
 │           ├── __init__.py       # Package exports
 │           ├── commands.py       # Commands -> Skills converter
+│           ├── skills.py         # Modular Skills migrator & sync
 │           ├── rules.py          # CLAUDE.md -> AGENTS.md converter
 │           └── mcp.py            # .mcp.json -> mcp_config.json converter
 ├── tests/
-│   ├── __init__.py               # Test path initialization
+│   ├── __init__.py               # Test path initialization & sys.path isolation
 │   ├── test_commands.py          # Command converter & detector tests
+│   ├── test_skills.py            # Modular skills migrator tests
 │   └── test_rules_mcp.py         # Rules, MCP & CLI integration tests
 ├── .agents/
 │   └── rules/

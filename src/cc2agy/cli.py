@@ -10,6 +10,7 @@ from cc2agy import __version__
 from cc2agy.converters.commands import convert_command_file, convert_commands_directory
 from cc2agy.converters.mcp import convert_mcp_file
 from cc2agy.converters.rules import convert_rules_file
+from cc2agy.converters.skills import migrate_skill_folder, migrate_skills_directory
 from cc2agy.detector import detect_claude_project
 
 
@@ -149,6 +150,17 @@ def handle_convert(
                     converted_skills += 1
                 except FileExistsError as e:
                     print(f"  [!] Skipped existing skill (use --overwrite to replace): {e}", file=sys.stderr)
+        # Direct SKILL.md file
+        elif target.name.lower() == "skill.md":
+            if do_skills:
+                skills_dest = dest if dest.name == "skills" else dest / "skills"
+                skills_dest.mkdir(parents=True, exist_ok=True)
+                try:
+                    res = migrate_skill_folder(target.parent, skills_dest, overwrite=overwrite)
+                    print(f"  [+] Skill migrated: {res.parent.name} -> {res}")
+                    converted_skills += 1
+                except FileExistsError as e:
+                    print(f"  [!] Skipped existing skill (use --overwrite to replace): {e}", file=sys.stderr)
 
     # 2. Handle directory target
     else:
@@ -161,6 +173,15 @@ def handle_convert(
                 for res in results:
                     print(f"  [+] Skill generated: {res.parent.name} -> {res}")
                     converted_skills += 1
+
+        # Migrate Existing Modular Skills
+        if do_skills and info.has_skills and info.skills_dir:
+            skills_dest = dest if dest.name == "skills" else dest / "skills"
+            skills_dest.mkdir(parents=True, exist_ok=True)
+            results = migrate_skills_directory(info.skills_dir, skills_dest, overwrite=overwrite)
+            for res in results:
+                print(f"  [+] Skill migrated: {res.parent.name} -> {res}")
+                converted_skills += 1
 
         # Convert Rules to AGENTS.md
         if do_rules and info.has_rules and info.rules_file:

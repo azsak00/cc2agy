@@ -7,6 +7,7 @@ from .commands import (
 )
 from .mcp import convert_mcp_config, convert_mcp_file
 from .rules import clean_rules_content, convert_rules_file
+from .skills import migrate_skill_folder, migrate_skills_directory
 
 __all__ = [
     "convert_command_file",
@@ -16,4 +17,6 @@ __all__ = [
     "clean_rules_content",
     "convert_mcp_file",
     "convert_mcp_config",
+    "migrate_skill_folder",
+    "migrate_skills_directory",
 ]

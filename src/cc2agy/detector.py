@@ -87,7 +87,25 @@ class ClaudeProjectInfo:
             lines.append(f"    - MCP Server Config at: {self.mcp_file.name}")
 
         if self.has_skills:
-            lines.append(f"    - Existing Skills at: {self.skills_dir.name}")
+            if (self.skills_dir / "SKILL.md").exists() or (self.skills_dir / "skill.md").exists():
+                lines.append(f"    - Modular Skill: {self.skills_dir.name}")
+            else:
+                try:
+                    skills_found = [
+                        d.name for d in sorted(self.skills_dir.iterdir())
+                        if d.is_dir() and ((d / "SKILL.md").exists() or (d / "skill.md").exists())
+                    ]
+                except (PermissionError, OSError):
+                    skills_found = []
+
+                if skills_found:
+                    lines.append(f"    - Existing Modular Skills ({len(skills_found)} in [{self.skills_dir.name}]):")
+                    for s_name in skills_found[:5]:
+                        lines.append(f"        /{s_name}")
+                    if len(skills_found) > 5:
+                        lines.append(f"        ... and {len(skills_found) - 5} more")
+                else:
+                    lines.append(f"    - Existing Skills at: {self.skills_dir.name}")
 
         if self.plugin_manifest:
             lines.append(f"    - Plugin Manifest at: {self.plugin_manifest.name}")
@@ -134,14 +152,17 @@ def detect_claude_project(target_path: Path) -> ClaudeProjectInfo:
                     info.command_files.append(md_file)
 
     # 2. Discover skills directories
-    candidate_skill_dirs = [
-        target_path / "skills",
-        target_path / ".claude" / "skills",
-    ]
-    for s_dir in candidate_skill_dirs:
-        if s_dir.exists() and s_dir.is_dir():
-            info.skills_dir = s_dir
-            break
+    if target_path.is_dir() and ((target_path / "SKILL.md").exists() or (target_path / "skill.md").exists()):
+        info.skills_dir = target_path
+    else:
+        candidate_skill_dirs = [
+            target_path / "skills",
+            target_path / ".claude" / "skills",
+        ]
+        for s_dir in candidate_skill_dirs:
+            if s_dir.exists() and s_dir.is_dir():
+                info.skills_dir = s_dir
+                break
 
     # 3. Discover project rules (case-insensitive for Linux/Unix)
     search_dirs_rules = [target_path, target_path / ".claude", target_path / "rules"]
