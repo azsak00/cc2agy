@@ -19,7 +19,7 @@ Anthropic's **Claude Code** has a vibrant ecosystem of custom slash commands, pl
 - 🪄 **Commands to Skills:** Translates Claude Code commands (`commands/*.md`) directly into canonical Antigravity **Skills** (`SKILL.md`), enabling native slash-command invocation (`/<command>`) and progressive disclosure.
 - 📋 **Instructions to Governance:** Converts `CLAUDE.md` project rules into clean Antigravity `AGENTS.md` governance files.
 - 🔌 **MCP Tool Integration:** Automatically converts `.mcp.json` into canonical `mcp_config.json` definitions.
-- 🛡️ **Zero Dependencies:** Pure Python standard library. No `pip install` headaches, no compilation, runs instantly anywhere.
+- 🛡️ **Zero Dependencies & Safe:** Pure Python standard library. No external dependencies, safe non-destructive overwrite guards, and cross-platform compatibility across Windows, macOS, and Linux.
 
 ---
 
@@ -30,28 +30,30 @@ Anthropic's **Claude Code** has a vibrant ecosystem of custom slash commands, pl
 | **Commands** | `commands/<name>.md` | `skills/<name>/SKILL.md` | Generates modern Antigravity Skills with YAML frontmatter (`name`, `description`) enabling slash-command trigger. |
 | **Modular Skills** | `skills/<name>/SKILL.md` | `skills/<name>/SKILL.md` | Preserves folder structure, scripts, and progressive disclosure references. |
 | **Project Rules** | `CLAUDE.md` | `AGENTS.md` | Strips unsupported YAML frontmatter, formats as imperative governance rules. |
-| **MCP Config** | `.mcp.json` | `mcp_config.json` | Maps server definitions into the standard `"mcpServers"` JSON structure. |
+| **MCP Config** | `.mcp.json` / `.claude.json` | `mcp_config.json` | Maps server definitions into the standard `"mcpServers"` JSON structure. |
 
 ---
 
 ## 🚀 Quick Start (1 Minute)
 
-### 1. Direct Execution (No Installation Required)
+### 1. Direct Execution (Zero-Config)
 
-Clone the repository and run directly with Python:
+Clone the repository and run immediately with Python without installing anything:
 
 ```bash
-python -m src.cc2agy convert path/to/claude-plugin --dest ~/.gemini/config/skills/
+# Inspect discovered Claude Code resources
+python cc2agy.py inspect path/to/claude-plugin
+
+# Convert directly into Antigravity Skills
+python cc2agy.py convert path/to/claude-plugin --dest ~/.gemini/config/skills/
 ```
 
-### 2. Standard CLI Usage
+### 2. Optional Package Installation (Editable Mode)
 
 ```bash
-# Convert a single command or an entire Claude Code plugin/workspace
-python -m cc2agy convert ./my-claude-project --dest ./output
-
-# Inspect and preview what will be converted without modifying files
-python -m cc2agy inspect ./my-claude-project
+pip install -e .
+cc2agy inspect path/to/claude-plugin
+cc2agy convert path/to/claude-plugin --dest ~/.gemini/config/skills/
 ```
 
 ---
@@ -63,15 +65,16 @@ cc2agy/
 ├── src/
 │   └── cc2agy/
 │       ├── __init__.py           # Package exports & version
+│       ├── __main__.py           # Module execution entrypoint
 │       ├── cli.py                # Command-line interface
 │       ├── detector.py           # Auto-detection of Claude Code assets
-│       ├── core.py               # Conversion orchestrator
 │       └── converters/
 │           ├── __init__.py
 │           ├── commands.py       # Commands -> Skills converter
-│           ├── rules.py          # CLAUDE.md -> AGENTS.md converter
-│           └── mcp.py            # .mcp.json -> mcp_config.json converter
+│           ├── rules.py          # CLAUDE.md -> AGENTS.md converter (Phase 2)
+│           └── mcp.py            # .mcp.json -> mcp_config.json converter (Phase 2)
 ├── tests/                        # Automated unit tests (built-in unittest)
+├── cc2agy.py                     # Standalone CLI runner
 ├── pyproject.toml                # Standard PEP 621 packaging
 ├── LICENSE                       # MIT License
 └── README.md                     # Documentation

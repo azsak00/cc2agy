@@ -4,14 +4,34 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Set
+
+
+def _find_case_insensitive(directory: Path, filename: str) -> Optional[Path]:
+    """Locate a file within a directory in a case-insensitive manner (cross-platform / Linux safe)."""
+    if not directory.exists() or not directory.is_dir():
+        return None
+
+    direct_path = directory / filename
+    if direct_path.exists() and direct_path.is_file():
+        return direct_path
+
+    target_lower = filename.lower()
+    try:
+        for item in directory.iterdir():
+            if item.is_file() and item.name.lower() == target_lower:
+                return item
+    except (PermissionError, OSError):
+        pass
+
+    return None
 
 
 @dataclass
 class ClaudeProjectInfo:
     """Holds information about discovered Claude Code resources in a directory."""
     root_path: Path
-    commands_dir: Optional[Path] = None
+    commands_dirs: List[Path] = field(default_factory=list)
     command_files: List[Path] = field(default_factory=list)
     skills_dir: Optional[Path] = None
     rules_file: Optional[Path] = None
@@ -53,57 +73,62 @@ class ClaudeProjectInfo:
 
         lines.append("  [+] Claude Code components found:")
         if self.has_commands:
-            lines.append(f"    - Commands ({len(self.command_files)} files) at: {self.commands_dir}")
+            dirs_str = ", ".join(str(d.name) for d in self.commands_dirs)
+            lines.append(f"    - Commands ({len(self.command_files)} files in [{dirs_str}]):")
             for cmd in self.command_files[:5]:
                 lines.append(f"        /{cmd.stem}")
             if len(self.command_files) > 5:
                 lines.append(f"        ... and {len(self.command_files) - 5} more")
 
         if self.has_rules:
-            lines.append(f"    - Project Rules at: {self.rules_file}")
+            lines.append(f"    - Project Rules at: {self.rules_file.name}")
 
         if self.has_mcp:
-            lines.append(f"    - MCP Server Config at: {self.mcp_file}")
+            lines.append(f"    - MCP Server Config at: {self.mcp_file.name}")
 
         if self.has_skills:
-            lines.append(f"    - Existing Skills at: {self.skills_dir}")
+            lines.append(f"    - Existing Skills at: {self.skills_dir.name}")
 
         if self.plugin_manifest:
-            lines.append(f"    - Plugin Manifest at: {self.plugin_manifest}")
+            lines.append(f"    - Plugin Manifest at: {self.plugin_manifest.name}")
 
         return "\n".join(lines)
 
 
 def detect_claude_project(target_path: Path) -> ClaudeProjectInfo:
-    """Inspect target_path and locate all Claude Code assets."""
+    """Inspect target_path and locate all Claude Code assets with cross-platform robustness."""
     target_path = target_path.resolve()
     info = ClaudeProjectInfo(root_path=target_path)
 
     if not target_path.exists():
         return info
 
-    # If target is directly a single command markdown file
+    # If target is directly a single command or rules markdown file
     if target_path.is_file() and target_path.suffix.lower() == ".md":
-        if target_path.name.upper() == "CLAUDE.MD":
+        if target_path.name.lower() == "claude.md":
             info.rules_file = target_path
         else:
             info.command_files.append(target_path)
-            info.commands_dir = target_path.parent
+            info.commands_dirs.append(target_path.parent)
         return info
 
-    # Check for commands directory
+    # 1. Discover command directories recursively and exhaustively
     candidate_cmd_dirs = [
         target_path / "commands",
         target_path / ".claude" / "commands",
         target_path / "prompts",
     ]
+    seen_files: Set[Path] = set()
     for c_dir in candidate_cmd_dirs:
         if c_dir.exists() and c_dir.is_dir():
-            info.commands_dir = c_dir
-            info.command_files.extend(sorted(c_dir.glob("*.md")))
-            break
+            info.commands_dirs.append(c_dir)
+            for md_file in sorted(c_dir.rglob("*.md")):
+                resolved = md_file.resolve()
+                if resolved not in seen_files:
+                    seen_files.add(resolved)
+                    info.command_files.append(md_file)
 
-    # Check for existing skills directory
+    # 2. Discover skills directories
     candidate_skill_dirs = [
         target_path / "skills",
         target_path / ".claude" / "skills",
@@ -113,37 +138,34 @@ def detect_claude_project(target_path: Path) -> ClaudeProjectInfo:
             info.skills_dir = s_dir
             break
 
-    # Check for project rules (CLAUDE.md)
-    candidate_rules = [
-        target_path / "CLAUDE.md",
-        target_path / ".claude" / "CLAUDE.md",
-        target_path / "rules" / "CLAUDE.md",
-    ]
-    for r_file in candidate_rules:
-        if r_file.exists() and r_file.is_file():
-            info.rules_file = r_file
+    # 3. Discover project rules (case-insensitive for Linux/Unix)
+    search_dirs_rules = [target_path, target_path / ".claude", target_path / "rules"]
+    for s_dir in search_dirs_rules:
+        found_rule = _find_case_insensitive(s_dir, "CLAUDE.md")
+        if found_rule:
+            info.rules_file = found_rule
             break
 
-    # Check for MCP configuration (.mcp.json or mcp.json)
-    candidate_mcp = [
-        target_path / ".mcp.json",
-        target_path / "mcp.json",
-        target_path / ".claude" / "mcp.json",
-    ]
-    for m_file in candidate_mcp:
-        if m_file.exists() and m_file.is_file():
-            info.mcp_file = m_file
+    # 4. Discover MCP configuration (.mcp.json, mcp.json, .claude.json, etc.)
+    search_dirs_mcp = [target_path, target_path / ".claude"]
+    mcp_filenames = [".mcp.json", "mcp.json", ".claude.json"]
+    for s_dir in search_dirs_mcp:
+        for fname in mcp_filenames:
+            found_mcp = _find_case_insensitive(s_dir, fname)
+            if found_mcp:
+                info.mcp_file = found_mcp
+                break
+        if info.mcp_file:
             break
 
-    # Check for plugin manifest
-    candidate_manifests = [
-        target_path / "plugin.json",
-        target_path / "manifest.json",
-        target_path / ".claude" / "plugin.json",
-    ]
-    for mf in candidate_manifests:
-        if mf.exists() and mf.is_file():
-            info.plugin_manifest = mf
+    # 5. Discover plugin manifest
+    for s_dir in [target_path, target_path / ".claude"]:
+        for mname in ["plugin.json", "manifest.json"]:
+            found_manifest = _find_case_insensitive(s_dir, mname)
+            if found_manifest:
+                info.plugin_manifest = found_manifest
+                break
+        if info.plugin_manifest:
             break
 
     return info

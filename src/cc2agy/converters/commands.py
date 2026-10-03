@@ -8,14 +8,24 @@ This module translates Claude Code commands directly into Antigravity Skills.
 from __future__ import annotations
 
 import re
+import unicodedata
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 def sanitize_skill_name(raw_name: str) -> str:
-    """Normalize a command name into a valid Antigravity skill directory name (kebab-case)."""
+    """Normalize a command name into a valid Antigravity skill directory name (kebab-case).
+
+    Transliterates Unicode accented characters (e.g. 'validação' -> 'validacao')
+    and cleans special characters and whitespace into hyphens.
+    """
+    # Decompose Unicode characters (e.g. 'ã' -> 'a' + combining tilde)
+    normalized = unicodedata.normalize("NFKD", raw_name)
+    # Strip combining marks to preserve ASCII base characters
+    ascii_text = "".join(c for c in normalized if not unicodedata.combining(c))
+
     # Replace spaces and underscores with hyphens
-    name = re.sub(r"[_\s]+", "-", raw_name.strip().lower())
+    name = re.sub(r"[_\s]+", "-", ascii_text.strip().lower())
     # Remove any character that isn't alphanumeric or hyphen
     name = re.sub(r"[^a-z0-9\-]", "", name)
     # Deduplicate consecutive hyphens
@@ -24,25 +34,63 @@ def sanitize_skill_name(raw_name: str) -> str:
 
 
 def parse_frontmatter(content: str) -> Tuple[Dict[str, str], str]:
-    """Parse simple YAML frontmatter if present, returning (metadata_dict, body)."""
+    """Parse YAML frontmatter supporting block scalars ('>-', '>', '|', '|-')."""
     frontmatter: Dict[str, str] = {}
     body = content
 
     pattern = r"^---\r?\n(.*?)\r?\n---\r?\n(.*)$"
     match = re.search(pattern, content, re.DOTALL)
-    if match:
-        raw_meta, body = match.group(1), match.group(2)
-        for line in raw_meta.splitlines():
-            line = line.strip()
-            if not line or line.startswith("#"):
+    if not match:
+        return frontmatter, body.strip()
+
+    raw_meta, body = match.group(1), match.group(2)
+    lines = raw_meta.splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            i += 1
+            continue
+
+        if ":" in line:
+            key, val = line.split(":", 1)
+            key = key.strip()
+            val = val.strip()
+
+            # Handle multiline YAML block scalars: >-, >, |, |-
+            if val in (">-", ">", "|", "|-"):
+                multiline_val: List[str] = []
+                i += 1
+                while i < len(lines):
+                    next_line = lines[i]
+                    # Indented lines belong to the multiline block
+                    if next_line.startswith("  ") or next_line.startswith("\t"):
+                        multiline_val.append(next_line.strip())
+                        i += 1
+                    elif not next_line.strip():
+                        i += 1
+                    else:
+                        break
+                if val.startswith(">"):
+                    # Folded scalar: join lines with spaces
+                    frontmatter[key] = " ".join(multiline_val).strip()
+                else:
+                    # Literal scalar: join lines with newlines
+                    frontmatter[key] = "\n".join(multiline_val).strip()
                 continue
-            if ":" in line:
-                key, val = line.split(":", 1)
-                key = key.strip()
-                val = val.strip().strip("\"'")
-                frontmatter[key] = val
+            else:
+                frontmatter[key] = val.strip("\"'")
+        i += 1
 
     return frontmatter, body.strip()
+
+
+def escape_yaml_string(text: str) -> str:
+    """Safely format a string for YAML double-quoted scalar."""
+    clean = text.replace("\\", "\\\\").replace('"', '\\"')
+    clean = " ".join(clean.splitlines()).strip()
+    return clean
 
 
 def extract_description(body: str, metadata: Dict[str, str], command_name: str) -> str:
@@ -50,14 +98,13 @@ def extract_description(body: str, metadata: Dict[str, str], command_name: str) 
     # 1. Prefer frontmatter description if present
     if "description" in metadata and metadata["description"]:
         desc = metadata["description"].strip()
-        # Ensure it starts nicely or is concise
-        return desc
+        if desc not in (">-", ">", "|", "|-"):
+            return desc
 
     # 2. Look for the first Markdown heading
     heading_match = re.search(r"^#+\s+(.+)$", body, re.MULTILINE)
     if heading_match:
         heading_text = heading_match.group(1).strip()
-        # If heading is not just the command name, use it
         if heading_text.lower() != command_name.lower():
             return f"Executes the /{command_name} routine: {heading_text}."
 
@@ -65,7 +112,6 @@ def extract_description(body: str, metadata: Dict[str, str], command_name: str) 
     lines = [line.strip() for line in body.splitlines() if line.strip() and not line.startswith("#")]
     if lines:
         first_line = lines[0]
-        # Clean markdown formatting like asterisks or backticks
         clean_line = re.sub(r"[\*`_]", "", first_line)
         if len(clean_line) > 120:
             clean_line = clean_line[:117] + "..."
@@ -76,31 +122,49 @@ def extract_description(body: str, metadata: Dict[str, str], command_name: str) 
 
 
 def adapt_prompt_arguments(body: str) -> str:
-    """Adapt Claude Code argument placeholders ($ARGUMENTS, $1, etc.) for Antigravity instructions."""
-    # Claude commands often use $ARGUMENTS or $1..$9
-    has_arguments = bool(re.search(r"\$(ARGUMENTS|[0-9])", body))
-    if not has_arguments:
-        return body
+    """Adapt Claude Code argument placeholders ($ARGUMENTS, $1..$9) for Antigravity instructions.
 
-    adapted = body
-    # Replace $ARGUMENTS with clear Antigravity prompt instructions
-    adapted = re.sub(r"\$ARGUMENTS", "[User Arguments provided after the slash command]", adapted)
-    # Replace $1, $2, etc.
-    adapted = re.sub(r"\$([1-9])", r"[Argument \1 provided by user]", adapted)
+    Isolates markdown code blocks (fenced ``` and inline `) to avoid corrupting bash scripts
+    or code examples, and applies strict word boundaries to avoid replacing monetary values ($50).
+    """
+    code_blocks: List[str] = []
 
-    # Prepend a small clarification block if not already documented
-    notice = (
-        "> [!NOTE]\n"
-        "> This skill was migrated from a Claude Code slash command. "
-        "Any user parameters passed after the slash command should be applied to the placeholders below.\n\n"
-    )
-    return notice + adapted
+    def _stash_code(match: re.Match) -> str:
+        code_blocks.append(match.group(0))
+        return f"__CC2AGY_CODE_STASH_{len(code_blocks)-1}__"
+
+    # 1. Stash fenced code blocks, then inline code
+    protected = re.sub(r"```[\s\S]*?```", _stash_code, body)
+    protected = re.sub(r"`[^`\n]+`", _stash_code, protected)
+
+    # 2. Check for legitimate argument variables with strict word boundary
+    has_arguments = bool(re.search(r"(?:\b\$ARGUMENTS\b|\$[1-9]\b)", protected))
+
+    if has_arguments:
+        # Replace $ARGUMENTS
+        protected = re.sub(r"\$ARGUMENTS\b", "[User Arguments provided after the slash command]", protected)
+        # Replace $1..$9 (guaranteeing not matching $50, $100, etc.)
+        protected = re.sub(r"\$([1-9])\b", r"[Argument \1 provided by user]", protected)
+
+        notice = (
+            "> [!NOTE]\n"
+            "> This skill was migrated from a Claude Code slash command. "
+            "Any user parameters passed after the slash command should be applied to the placeholders below.\n\n"
+        )
+        protected = notice + protected
+
+    # 3. Restore code blocks
+    for idx, block in enumerate(code_blocks):
+        protected = protected.replace(f"__CC2AGY_CODE_STASH_{idx}__", block)
+
+    return protected
 
 
 def convert_command_file(
     source_file: Path,
     dest_skills_dir: Path,
-    custom_name: Optional[str] = None
+    custom_name: Optional[str] = None,
+    overwrite: bool = False
 ) -> Path:
     """Convert a single Claude Code command file into an Antigravity Skill folder."""
     raw_content = source_file.read_text(encoding="utf-8")
@@ -119,11 +183,17 @@ def convert_command_file(
     skill_folder.mkdir(parents=True, exist_ok=True)
     target_skill_file = skill_folder / "SKILL.md"
 
-    # Assemble canonical Antigravity SKILL.md
+    if target_skill_file.exists() and not overwrite:
+        raise FileExistsError(
+            f"Target skill file already exists: '{target_skill_file}'. "
+            "Pass overwrite=True to allow overwriting."
+        )
+
+    escaped_desc = escape_yaml_string(description)
     skill_content = (
         "---\n"
         f"name: {skill_name}\n"
-        f"description: \"{description}\"\n"
+        f'description: "{escaped_desc}"\n'
         "---\n\n"
         f"{body}\n"
     )
@@ -134,17 +204,22 @@ def convert_command_file(
 
 def convert_commands_directory(
     commands_dir: Path,
-    dest_skills_dir: Path
+    dest_skills_dir: Path,
+    overwrite: bool = False
 ) -> list[Path]:
-    """Scan and convert all markdown command files inside a directory."""
+    """Scan and convert all markdown command files inside a directory (including nested subfolders)."""
     if not commands_dir.exists() or not commands_dir.is_dir():
         return []
 
     converted: list[Path] = []
-    # Collect all markdown files
-    for md_file in sorted(commands_dir.glob("*.md")):
+    # Collect all markdown files recursively
+    for md_file in sorted(commands_dir.rglob("*.md")):
         if md_file.is_file():
-            skill_path = convert_command_file(md_file, dest_skills_dir)
-            converted.append(skill_path)
+            try:
+                skill_path = convert_command_file(md_file, dest_skills_dir, overwrite=overwrite)
+                converted.append(skill_path)
+            except FileExistsError:
+                # Safe skip when overwrite is False
+                continue
 
     return converted
