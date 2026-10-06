@@ -115,7 +115,11 @@ class ClaudeProjectInfo:
             if len(self.command_files) > 5:
                 lines.append(f"        ... and {len(self.command_files) - 5} more")
 
-        if self.has_rules:
+        if self.has_rules and self.is_plugin:
+            lines.append(
+                f"    - {self.rules_file.name} at plugin level (not converted: Claude Code does not load it in a plugin)"
+            )
+        elif self.has_rules:
             lines.append(f"    - Project Rules at: {self.rules_file.name}")
 
         if self.has_mcp:

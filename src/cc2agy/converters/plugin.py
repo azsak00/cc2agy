@@ -19,7 +19,6 @@ from cc2agy.converters.commands import (
 )
 from cc2agy.converters.hooks import write_hooks_data
 from cc2agy.converters.mcp import extract_servers_dict, write_mcp_data
-from cc2agy.converters.rules import convert_rules_file
 from cc2agy.converters.skills import migrate_skills_directory
 from cc2agy.converters.variables import (
     DATA_DIR_NAME,
@@ -60,7 +59,6 @@ NOT_COPIED_FILES = {
     ".mcp.json",
     "mcp.json",
     ".claude.json",
-    "claude.md",
     "settings.json",
     ".lsp.json",
 }
@@ -258,9 +256,7 @@ def convert_plugin(
     ├── plugin.json
     ├── mcp_config.json   (optional)
     ├── hooks.json        (optional)
-    ├── rules/            (optional)
-    │   └── AGENTS.md
-    ├── skills/           (optional)
+    ├── skills/          (optional)
     │   └── <skill>/SKILL.md
     ├── agents/           (optional)
     │   └── <agent>.md
@@ -397,16 +393,15 @@ def convert_plugin(
             except Exception as e:
                 summary["warnings"].append(f"Could not sanitize skill {skill_file.name}: {e}")
 
-    # 5. Migrate Rules to rules/AGENTS.md
-    r_cand = locations.rules_file(source_dir)
-    if r_cand is not None:
-        rules_dest = target_plugin_dir / "rules"
-        try:
-            res, w = convert_rules_file(r_cand, rules_dest, overwrite=overwrite)
-            summary["rules_migrated"] += 1
-            summary["warnings"].extend(w)
-        except FileExistsError:
-            summary["warnings"].append("Rules file already exists in plugin; skipped.")
+    # 5. Claude Code does not load a CLAUDE.md in a plugin, so none becomes an Antigravity rule
+    # (rules/ in an Antigravity plugin is always active). The root one is copied as it is below.
+    for r_cand in locations.rules_files(source_dir):
+        rel = r_cand.relative_to(source_dir).as_posix()
+        copied = " It is copied as it is." if r_cand.parent == source_dir else ""
+        warnings.append(
+            f"{rel} not converted into a rule: it is not loaded by Claude Code in a plugin; instructions "
+            f"meant for the agent's context belong in a skill.{copied}"
+        )
 
     # 6. Migrate MCP config to mcp_config.json: the default file first, then plugin.json
     # "mcpServers" entries in order (a server name declared later replaces an earlier one)

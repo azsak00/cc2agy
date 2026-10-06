@@ -63,7 +63,7 @@ class TestPluginConverter(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            # Rules
+            # CLAUDE.md, which Claude Code does not load in a plugin
             (source_plugin / "CLAUDE.md").write_text(
                 "---\ntitle: Claude Rules\n---\n# Rules\nAlways verify.\n", encoding="utf-8"
             )
@@ -102,7 +102,7 @@ class TestPluginConverter(unittest.TestCase):
 
             self.assertEqual(summary["plugin_name"], "mock-plugin")
             self.assertEqual(summary["skills_migrated"], 2)
-            self.assertEqual(summary["rules_migrated"], 1)
+            self.assertEqual(summary["rules_migrated"], 0)
             self.assertEqual(summary["mcp_migrated"], 1)
             self.assertEqual(summary["hooks_migrated"], 1)
             self.assertIn("scripts", summary["auxiliary_dirs_copied"])
@@ -114,7 +114,7 @@ class TestPluginConverter(unittest.TestCase):
             self.assertTrue((plugin_dir / "README.md").exists())
             self.assertTrue((plugin_dir / "mcp_config.json").exists())
             self.assertTrue((plugin_dir / "hooks.json").exists())
-            self.assertTrue((plugin_dir / "rules" / "AGENTS.md").exists())
+            self.assertFalse((plugin_dir / "rules").exists())
             self.assertTrue((plugin_dir / "skills" / "quick-test" / "SKILL.md").exists())
             self.assertTrue((plugin_dir / "skills" / "linter" / "SKILL.md").exists())
             self.assertTrue((plugin_dir / "scripts" / "lint.py").exists())
@@ -129,10 +129,11 @@ class TestPluginConverter(unittest.TestCase):
             self.assertNotIn("CLAUDE_PLUGIN_ROOT", linter_content)
             self.assertIn(f'"{plugin_dir.as_posix()}/scripts/lint.py"', linter_content)
 
-            # Verify AGENTS.md frontmatter stripped
-            agents_content = (plugin_dir / "rules" / "AGENTS.md").read_text(encoding="utf-8")
-            self.assertNotIn("---", agents_content)
-            self.assertIn("# Rules", agents_content)
+            # CLAUDE.md is copied as it is, not turned into a rule
+            self.assertEqual(
+                (plugin_dir / "CLAUDE.md").read_text(encoding="utf-8"),
+                "---\ntitle: Claude Rules\n---\n# Rules\nAlways verify.\n",
+            )
 
     def test_reconvert_with_overwrite_updates_command_skills(self):
         """--overwrite must refresh skills generated from commands, not keep the stale copy."""
@@ -470,14 +471,50 @@ class TestPluginConverter(unittest.TestCase):
             server = json.loads((plugin_dir / "mcp_config.json").read_text(encoding="utf-8"))["mcpServers"]
             self.assertEqual(list(server), ["eco"])
             self.assertTrue(Path(server["eco"]["args"][0]).is_file())
-            for copied in ("package.json", "requirements.txt", ".env", "README.md", "AGENTS.md"):
+            for copied in ("package.json", "requirements.txt", ".env", "README.md", "AGENTS.md", "CLAUDE.md"):
                 self.assertTrue((plugin_dir / copied).is_file(), copied)
             self.assertEqual(json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))["name"], "plug")
             self.assertIn("plug-hooks", json.loads((plugin_dir / "hooks.json").read_text(encoding="utf-8")))
-            for skipped in (".mcp.json", "CLAUDE.md", "settings.json", ".gitignore"):
+            for skipped in (".mcp.json", "settings.json", ".gitignore"):
                 self.assertFalse((plugin_dir / skipped).exists(), skipped)
             self.assertTrue(any(".env copied" in w for w in summary["warnings"]))
             self.assertTrue(any("AGENTS.md copied" in w for w in summary["warnings"]))
+
+    def test_plugin_claude_md_is_not_converted_into_a_rule(self):
+        """Claude Code does not load a CLAUDE.md in a plugin, so none becomes an Antigravity rule."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            plugin = self._make_plugin(tmp_path, {"name": "plug"})
+            for rel in ("CLAUDE.md", ".claude/CLAUDE.md", "rules/CLAUDE.md"):
+                (plugin / rel).parent.mkdir(parents=True, exist_ok=True)
+                (plugin / rel).write_text(f"Rule from {rel}.", encoding="utf-8")
+
+            plugin_dir, summary = convert_plugin(plugin, tmp_path / "out", overwrite=True)
+
+            self.assertEqual(summary["rules_migrated"], 0)
+            self.assertFalse((plugin_dir / "rules").exists())
+            self.assertFalse((plugin_dir / ".claude").exists())
+            self.assertEqual((plugin_dir / "CLAUDE.md").read_text(encoding="utf-8"), "Rule from CLAUDE.md.")
+            notes = [w for w in summary["warnings"] if "not loaded by Claude Code" in w]
+            self.assertEqual(len(notes), 3, summary["warnings"])
+            for rel in ("CLAUDE.md", ".claude/CLAUDE.md", "rules/CLAUDE.md"):
+                self.assertTrue(any(w.startswith(rel + " ") for w in notes), rel)
+
+    def test_inspect_flags_plugin_claude_md_as_not_converted(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            plugin = self._make_plugin(tmp_path, {"name": "plug"})
+            (plugin / "CLAUDE.md").write_text("Rule.", encoding="utf-8")
+            project = tmp_path / "project"
+            project.mkdir()
+            (project / "CLAUDE.md").write_text("Rule.", encoding="utf-8")
+
+            plugin_summary = detect_claude_project(plugin).summary()
+            project_summary = detect_claude_project(project).summary()
+
+            self.assertNotIn("Project Rules", plugin_summary)
+            self.assertIn("not converted", plugin_summary)
+            self.assertIn("Project Rules at: CLAUDE.md", project_summary)
 
     def test_destination_inside_plugin_is_not_copied_into_itself(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

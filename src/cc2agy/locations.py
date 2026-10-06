@@ -96,6 +96,12 @@ def rules_file(root: Path) -> Optional[Path]:
     return _first_file(root, RULES_DIRS, RULES_FILES)
 
 
+def rules_files(root: Path) -> List[Path]:
+    """Every rules file found, one per folder, in search order."""
+    found = (find_case_insensitive(root.joinpath(*parts), name) for parts in RULES_DIRS for name in RULES_FILES)
+    return [f for f in found if f is not None]
+
+
 def mcp_file(root: Path) -> Optional[Path]:
     return _first_file(root, MCP_DIRS, MCP_FILES)
 
