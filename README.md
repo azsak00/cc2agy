@@ -209,6 +209,7 @@ Converting again with a newer cc2agy can change results. Skills, subagents and f
 - An unreadable `plugin.json` stops the conversion with an error (it used to be ignored silently).
 - Source files saved with a UTF-8 BOM (as Windows PowerShell 5.1 does) are read normally.
 - Argument placeholders and `${CLAUDE_SKILL_DIR}` inside modular skills (`SKILL.md`) are converted (they used to be copied as they were).
+- Plugins are searched in the same places `inspect` lists: commands in `commands/`, `.claude/commands/` and `prompts/` are all converted (only the first of the first two used to be, and `prompts/` was copied as it was), subagents in `.claude/agents/` are converted, and an MCP config in `.claude/` (`.mcp.json`, `mcp.json` or `.claude.json`) is read. A plugin with commands in more than one of these folders may produce more skills than before.
 
 ---
 
@@ -241,6 +242,7 @@ cc2agy/
 ├── src/cc2agy/
 │   ├── cli.py              # Command-line interface
 │   ├── detector.py         # Finds Claude Code components in a folder or file
+│   ├── locations.py        # Where each component is looked for (shared by detector and plugin)
 │   └── converters/
 │       ├── agents.py       # Subagents
 │       ├── commands.py     # Commands -> Skills
@@ -308,6 +310,7 @@ Ao converter de novo com a versão atual, o que veio da conversão anterior cont
 - Um `plugin.json` ilegível interrompe a conversão com erro (antes era ignorado sem aviso).
 - Arquivos gravados com BOM, como faz o PowerShell 5.1 do Windows, passaram a ser lidos normalmente.
 - Nas skills modulares (`SKILL.md`), os marcadores de argumento e `${CLAUDE_SKILL_DIR}` passaram a ser convertidos (antes eram copiados como estavam).
+- Nos plugins, a busca segue os mesmos lugares que o `inspect` lista: os comandos de `commands/`, `.claude/commands/` e `prompts/` são todos convertidos (antes só a primeira das duas primeiras pastas, e `prompts/` era copiada como estava), os subagentes de `.claude/agents/` são convertidos, e uma configuração MCP em `.claude/` (`.mcp.json`, `mcp.json` ou `.claude.json`) é lida. Um plugin com comandos em mais de uma dessas pastas pode gerar mais skills do que antes.
 
 ### Limitações
 

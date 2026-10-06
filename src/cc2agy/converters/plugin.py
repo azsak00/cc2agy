@@ -29,7 +29,7 @@ from cc2agy.converters.variables import (
     scripts_read_environment,
     substitute,
 )
-from cc2agy.detector import CLAUDE_PLUGIN_DIR, _find_case_insensitive
+from cc2agy import locations
 
 
 # Claude Code plugin components with no Antigravity counterpart (an Antigravity plugin holds
@@ -46,23 +46,8 @@ UNSUPPORTED_COMPONENTS: List[Tuple[str, Optional[str], Tuple[str, ...], str]] = 
     ("Dependencies", None, ("dependencies",), " Convert and install the plugins it depends on separately."),
 ]
 
-# Top-level plugin folders that are not copied as is: the components converted above, the
-# folders of components with no equivalent (they are reported instead), and rules/, since
-# Antigravity loads every file in a plugin's rules/ as an active rule. Every other folder
-# (scripts, MCP servers in dist/, src/, lib/ ...) is copied, as Claude Code keeps the whole
-# plugin folder and ${CLAUDE_PLUGIN_ROOT} paths may point anywhere in it.
-NOT_COPIED_DIRS = {
-    ".claude-plugin",
-    ".claude",
-    "skills",
-    "commands",
-    "agents",
-    "rules",
-    "output-styles",
-    "workflows",
-    "themes",
-    "monitors",
-}
+# The top-level folders copied as is are those of locations.copied_plugin_dirs (see
+# locations.NOT_COPIED_DIRS); inspect lists the same ones.
 # Root files not copied: files Antigravity would read as the converted plugin's own
 # configuration, source files already converted (copying .mcp.json would also duplicate any
 # credentials in it), and components with no equivalent (they are reported instead).
@@ -105,7 +90,7 @@ def sanitize_skill_content(
 
 def find_plugin_manifest(source_dir: Path) -> Optional[Path]:
     """Locate the Claude Code plugin manifest (.claude-plugin/plugin.json only)."""
-    return _find_case_insensitive(source_dir / CLAUDE_PLUGIN_DIR, "plugin.json")
+    return locations.plugin_manifest(source_dir)
 
 
 def _manifest_entries(value: Any) -> List[Any]:
@@ -279,8 +264,8 @@ def convert_plugin(
     │   └── <skill>/SKILL.md
     ├── agents/           (optional)
     │   └── <agent>.md
-    └── ...               (every other plugin folder and root file, copied; see NOT_COPIED_DIRS
-                           and NOT_COPIED_FILES)
+    └── ...               (every other plugin folder and root file, copied; see
+                           locations.NOT_COPIED_DIRS and NOT_COPIED_FILES)
     """
     source_dir = source_dir.resolve()
     dest_dir = dest_dir.resolve()
@@ -367,10 +352,8 @@ def convert_plugin(
     # Migrate modular skills first (prioritize rich, multi-file modular skill definitions).
     # plugin.json "skills" adds directories to the default skills/ scan.
     skill_dirs: List[Path] = []
-    source_skills_dir = source_dir / "skills"
-    if not source_skills_dir.exists():
-        source_skills_dir = source_dir / ".claude" / "skills"
-    if source_skills_dir.exists() and source_skills_dir.is_dir():
+    source_skills_dir = locations.skills_dir(source_dir)
+    if source_skills_dir is not None:
         skill_dirs.append(source_skills_dir.resolve())
     for raw in _manifest_entries(manifest_data.get("skills")):
         path = _resolve_component_path(source_dir, raw, "skills", warnings)
@@ -388,7 +371,7 @@ def convert_plugin(
         modular_skill_names.update(r.parent.name if r.is_file() else r.name for r in sk_results)
 
     # Convert commands, honoring overwrite, but never replacing a modular skill of the same name.
-    # plugin.json "commands" replaces the default commands/ scan.
+    # plugin.json "commands" replaces the default scan of every command folder.
     claimed_names: Dict[str, str] = {}
     if "commands" in manifest_data:
         summary["skills_migrated"] += _convert_declared_commands(
@@ -396,10 +379,7 @@ def convert_plugin(
             claimed_names,
         )
     else:
-        commands_dir = source_dir / "commands"
-        if not commands_dir.exists():
-            commands_dir = source_dir / ".claude" / "commands"
-        if commands_dir.exists() and commands_dir.is_dir():
+        for commands_dir in locations.command_dirs(source_dir):
             cmd_results = convert_commands_directory(
                 commands_dir, skills_dest, overwrite=overwrite, skip_names=modular_skill_names,
                 claimed=claimed_names, warnings=warnings,
@@ -418,37 +398,24 @@ def convert_plugin(
                 summary["warnings"].append(f"Could not sanitize skill {skill_file.name}: {e}")
 
     # 5. Migrate Rules to rules/AGENTS.md
-    rules_candidates = [
-        source_dir / "CLAUDE.md",
-        source_dir / ".claude" / "CLAUDE.md",
-        source_dir / "rules" / "CLAUDE.md",
-    ]
-    for r_cand in rules_candidates:
-        if r_cand.exists() and r_cand.is_file():
-            rules_dest = target_plugin_dir / "rules"
-            try:
-                res, w = convert_rules_file(r_cand, rules_dest, overwrite=overwrite)
-                summary["rules_migrated"] += 1
-                summary["warnings"].extend(w)
-            except FileExistsError:
-                summary["warnings"].append("Rules file already exists in plugin; skipped.")
-            break
+    r_cand = locations.rules_file(source_dir)
+    if r_cand is not None:
+        rules_dest = target_plugin_dir / "rules"
+        try:
+            res, w = convert_rules_file(r_cand, rules_dest, overwrite=overwrite)
+            summary["rules_migrated"] += 1
+            summary["warnings"].extend(w)
+        except FileExistsError:
+            summary["warnings"].append("Rules file already exists in plugin; skipped.")
 
     # 6. Migrate MCP config to mcp_config.json: the default file first, then plugin.json
     # "mcpServers" entries in order (a server name declared later replaces an earlier one)
-    mcp_candidates = [
-        source_dir / ".mcp.json",
-        source_dir / "mcp.json",
-        source_dir / ".claude.json",
-        source_dir / ".claude" / "mcp.json",
-    ]
     mcp_servers: Dict[str, Any] = {}
     mcp_sources = 0
-    for m_cand in mcp_candidates:
-        if m_cand.exists() and m_cand.is_file():
-            mcp_servers.update(extract_servers_dict(_read_json(m_cand)))
-            mcp_sources += 1
-            break
+    m_cand = locations.mcp_file(source_dir)
+    if m_cand is not None:
+        mcp_servers.update(extract_servers_dict(_read_json(m_cand)))
+        mcp_sources += 1
     for raw in _manifest_entries(manifest_data.get("mcpServers")):
         if isinstance(raw, dict):
             mcp_servers.update(extract_servers_dict(raw))
@@ -472,18 +439,12 @@ def convert_plugin(
 
     # 7. Migrate Hooks to hooks.json: the default file merged with plugin.json "hooks"
     # entries (file paths carry a top-level "hooks" wrapper; inline objects are the event map)
-    hooks_candidates = [
-        source_dir / "hooks" / "hooks.json",
-        source_dir / "hooks.json",
-        source_dir / ".claude" / "hooks.json",
-    ]
     hook_events: Dict[str, List[Any]] = {}
     hook_sources = 0
-    for h_cand in hooks_candidates:
-        if h_cand.exists() and h_cand.is_file():
-            _merge_hook_events(hook_events, _read_json(h_cand), h_cand.name, warnings)
-            hook_sources += 1
-            break
+    h_cand = locations.hooks_file(source_dir)
+    if h_cand is not None:
+        _merge_hook_events(hook_events, _read_json(h_cand), h_cand.name, warnings)
+        hook_sources += 1
     for raw in _manifest_entries(manifest_data.get("hooks")):
         if isinstance(raw, dict):
             _merge_hook_events(hook_events, raw, "plugin.json", warnings)
@@ -508,7 +469,7 @@ def convert_plugin(
             warnings.append("Hooks file already exists in plugin; skipped.")
 
     # 8. Convert subagents into agents/. plugin.json "agents" (.md files only) replaces the
-    # default agents/ scan, and its files load without subfolder names.
+    # default scan of every agent folder, and its files load without subfolder names.
     agents_dest = target_plugin_dir / "agents"
     agent_claimed: Dict[str, str] = {}
     agent_files: List[Path] = []
@@ -529,11 +490,10 @@ def convert_plugin(
             else:
                 warnings.append(f"plugin.json 'agents': '{raw}' is not a .md file; skipped.")
     else:
-        source_agents_dir = source_dir / "agents"
-        if source_agents_dir.is_dir():
-            agent_files = convert_agents_directory(
+        for source_agents_dir in locations.agent_dirs(source_dir):
+            agent_files.extend(convert_agents_directory(
                 source_agents_dir, agents_dest, agent_claimed, warnings, plugin_name=plugin_name, overwrite=overwrite
-            )
+            ))
     for agent_file in agent_files:
         content = agent_file.read_text(encoding="utf-8")
         if any(marker in content for marker in VARIABLE_MARKERS):
@@ -543,20 +503,18 @@ def convert_plugin(
     summary["agents_migrated"] = len(agent_files)
 
     # 9. Copy the other plugin folders (scripts, MCP servers, templates, bin, etc.)
-    for item in sorted(source_dir.iterdir()):
-        if not item.is_dir():
-            continue
+    rules_dir = next((d for d in source_dir.iterdir() if d.is_dir() and d.name.lower() == "rules"), None)
+    if rules_dir is not None:
+        extra = [p.name for p in rules_dir.iterdir() if p.name.lower() != "claude.md"]
+        if extra:
+            warnings.append(
+                f"{rules_dir.name}/ not copied: Antigravity would load its files as active rules "
+                f"({', '.join(sorted(extra))})."
+            )
+    for item in locations.copied_plugin_dirs(source_dir):
         item_lower = item.name.lower()
-        if item_lower == "rules":
-            extra = [p.name for p in item.iterdir() if p.name.lower() != "claude.md"]
-            if extra:
-                warnings.append(
-                    f"{item.name}/ not copied: Antigravity would load its files as active rules "
-                    f"({', '.join(sorted(extra))})."
-                )
-            continue
         # A destination inside the plugin folder (e.g. ./output) must not be copied into itself
-        if item_lower in NOT_COPIED_DIRS or item_lower.startswith(".git") or target_plugin_dir.is_relative_to(item):
+        if target_plugin_dir.is_relative_to(item):
             continue
         dest_aux = target_plugin_dir / item.name
         try:

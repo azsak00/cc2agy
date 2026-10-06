@@ -7,11 +7,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Set
 
+from cc2agy import locations
 from cc2agy.converters.commands import command_default_name
 from cc2agy.converters.hooks import SETTINGS_FILES
-
-
-CLAUDE_PLUGIN_DIR = ".claude-plugin"
+from cc2agy.locations import CLAUDE_PLUGIN_DIR, find_case_insensitive
 
 
 def _settings_hook_keys(path: Path) -> Set[str]:
@@ -29,26 +28,6 @@ def _settings_hook_keys(path: Path) -> Set[str]:
 def _is_claude_plugin_manifest(path: Path) -> bool:
     """True for the canonical Claude Code manifest location: .claude-plugin/plugin.json."""
     return path.name.lower() == "plugin.json" and path.parent.name.lower() == CLAUDE_PLUGIN_DIR
-
-
-def _find_case_insensitive(directory: Path, filename: str) -> Optional[Path]:
-    """Locate a file within a directory in a case-insensitive manner (cross-platform / Linux safe)."""
-    if not directory.exists() or not directory.is_dir():
-        return None
-
-    direct_path = directory / filename
-    if direct_path.exists() and direct_path.is_file():
-        return direct_path
-
-    target_lower = filename.lower()
-    try:
-        for item in directory.iterdir():
-            if item.is_file() and item.name.lower() == target_lower:
-                return item
-    except (PermissionError, OSError):
-        pass
-
-    return None
 
 
 @dataclass
@@ -216,73 +195,41 @@ def detect_claude_project(target_path: Path) -> ClaudeProjectInfo:
                 return info
 
     # 1. Discover command directories recursively and exhaustively
-    candidate_cmd_dirs = [
-        target_path / "commands",
-        target_path / ".claude" / "commands",
-        target_path / "prompts",
-    ]
     seen_files: Set[Path] = set()
-    for c_dir in candidate_cmd_dirs:
-        if c_dir.exists() and c_dir.is_dir():
-            info.commands_dirs.append(c_dir)
-            for md_file in sorted(c_dir.rglob("*.md")):
-                resolved = md_file.resolve()
-                if resolved not in seen_files:
-                    seen_files.add(resolved)
-                    info.command_files.append(md_file)
+    for c_dir in locations.command_dirs(target_path):
+        info.commands_dirs.append(c_dir)
+        for md_file in sorted(c_dir.rglob("*.md")):
+            resolved = md_file.resolve()
+            if resolved not in seen_files:
+                seen_files.add(resolved)
+                info.command_files.append(md_file)
 
     # 2. Discover skills directories
     if target_path.is_dir() and ((target_path / "SKILL.md").exists() or (target_path / "skill.md").exists()):
         info.skills_dir = target_path
     else:
-        candidate_skill_dirs = [
-            target_path / "skills",
-            target_path / ".claude" / "skills",
-        ]
-        for s_dir in candidate_skill_dirs:
-            if s_dir.exists() and s_dir.is_dir():
-                info.skills_dir = s_dir
-                break
+        info.skills_dir = locations.skills_dir(target_path)
 
     # 3. Discover project rules (case-insensitive for Linux/Unix)
-    search_dirs_rules = [target_path, target_path / ".claude", target_path / "rules"]
-    for s_dir in search_dirs_rules:
-        found_rule = _find_case_insensitive(s_dir, "CLAUDE.md")
-        if found_rule:
-            info.rules_file = found_rule
-            break
+    info.rules_file = locations.rules_file(target_path)
 
     # 4. Discover MCP configuration (.mcp.json, mcp.json, .claude.json, etc.)
-    search_dirs_mcp = [target_path, target_path / ".claude"]
-    mcp_filenames = [".mcp.json", "mcp.json", ".claude.json"]
-    for s_dir in search_dirs_mcp:
-        for fname in mcp_filenames:
-            found_mcp = _find_case_insensitive(s_dir, fname)
-            if found_mcp:
-                info.mcp_file = found_mcp
-                break
-        if info.mcp_file:
-            break
+    info.mcp_file = locations.mcp_file(target_path)
 
     # 5. Discover plugin manifest. Claude Code only reads .claude-plugin/plugin.json;
     # a root plugin.json or manifest.json belongs to other tools (web app manifests,
     # already-converted Antigravity plugins) and must not trigger plugin packaging.
-    info.plugin_manifest = _find_case_insensitive(target_path / CLAUDE_PLUGIN_DIR, "plugin.json")
+    info.plugin_manifest = locations.plugin_manifest(target_path)
 
     # 6. Discover lifecycle hooks (hooks.json, etc.)
-    search_dirs_hooks = [target_path / "hooks", target_path, target_path / ".claude"]
-    for h_dir in search_dirs_hooks:
-        found_hooks = _find_case_insensitive(h_dir, "hooks.json")
-        if found_hooks:
-            info.hooks_file = found_hooks
-            break
+    info.hooks_file = locations.hooks_file(target_path)
 
     # Project hooks live in .claude/settings.json and .claude/settings.local.json. A file that
     # only sets disableAllHooks counts when some other source holds hooks.
     settings_dir = target_path if target_path.name.lower() == ".claude" else target_path / ".claude"
     settings_found = []
     for fname in SETTINGS_FILES:
-        found_settings = _find_case_insensitive(settings_dir, fname)
+        found_settings = find_case_insensitive(settings_dir, fname)
         if found_settings:
             keys = _settings_hook_keys(found_settings)
             if keys:
@@ -291,30 +238,14 @@ def detect_claude_project(target_path: Path) -> ClaudeProjectInfo:
         info.settings_files = [f for f, _ in settings_found]
 
     # 7. Discover subagents (plugin agents/ and project .claude/agents/, scanned recursively)
-    for a_dir in (target_path / "agents", target_path / ".claude" / "agents"):
-        if a_dir.is_dir():
-            files = [f for f in sorted(a_dir.rglob("*.md")) if f.is_file()]
-            if files:
-                info.agents_dirs.append(a_dir)
-                info.agent_files.extend(files)
+    for a_dir in locations.agent_dirs(target_path):
+        files = [f for f in sorted(a_dir.rglob("*.md")) if f.is_file()]
+        if files:
+            info.agents_dirs.append(a_dir)
+            info.agent_files.extend(files)
 
-    # 8. Discover auxiliary plugin directories
-    if target_path.is_dir():
-        known_aux = {
-            "scripts",
-            "templates",
-            "espec",
-            "hooks",
-            "resources",
-            "references",
-            "docs",
-            "context",
-        }
-        try:
-            for item in sorted(target_path.iterdir()):
-                if item.is_dir() and item.name.lower() in known_aux:
-                    info.auxiliary_dirs.append(item)
-        except (PermissionError, OSError):
-            pass
+    # 8. Discover the plugin folders the plugin conversion copies as they are
+    if info.is_plugin:
+        info.auxiliary_dirs = locations.copied_plugin_dirs(target_path)
 
     return info
