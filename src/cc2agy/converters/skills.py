@@ -155,6 +155,50 @@ def migrate_skill_folder(
     return target_skill_file if target_skill_file.exists() else target_skill_dir
 
 
+def migrate_root_skill(
+    skill_file: Path,
+    default_name: str,
+    dest_skills_dir: Path,
+    files_dir: Path,
+    overwrite: bool = False,
+    warnings: Optional[List[str]] = None,
+) -> Path:
+    """Convert the SKILL.md at a plugin root, which Claude Code loads as one skill, into
+    dest_skills_dir/<name>/SKILL.md. The name is the frontmatter 'name', or default_name (the
+    plugin folder name), as in Claude Code. Only SKILL.md goes into the skill folder: the
+    plugin's other files stay in files_dir (the converted plugin root), so ${CLAUDE_SKILL_DIR}
+    becomes that folder and a closing note says relative paths refer to it.
+    """
+    if warnings is None:
+        warnings = []
+    with open(skill_file, "r", encoding="utf-8-sig", errors="replace", newline="") as f:
+        content = f.read()
+    meta, _ = parse_frontmatter(content)
+    raw_name = meta.get("name")
+    skill_name = sanitize_skill_name(raw_name if isinstance(raw_name, str) and raw_name.strip() else default_name)
+
+    target_skill_dir = dest_skills_dir / skill_name
+    target_skill_file = target_skill_dir / "SKILL.md"
+    if target_skill_dir.exists() and not overwrite:
+        raise FileExistsError(
+            f"Target skill directory already exists: '{target_skill_dir}'. "
+            "Pass overwrite=True to allow overwriting."
+        )
+
+    named = _set_frontmatter_name(content, skill_name) or content
+    adapted = _adapt_skill_body(named, files_dir.resolve(), skill_name, warnings)
+    nl = "\r\n" if "\r\n" in adapted else "\n"
+    note = (
+        f"{nl}{nl}> [!NOTE]{nl}> This skill was migrated from the SKILL.md at the root of a Claude Code "
+        f"plugin. Its supporting files are in `{files_dir.resolve().as_posix()}`; read relative paths in "
+        f"this skill from that folder.{nl}"
+    )
+    target_skill_dir.mkdir(parents=True, exist_ok=True)
+    with open(target_skill_file, "w", encoding="utf-8", newline="") as f:
+        f.write(adapted.rstrip("\r\n") + note)
+    return target_skill_file
+
+
 def migrate_skills_directory(
     skills_source: Path,
     dest_skills_dir: Path,

@@ -19,7 +19,7 @@ from cc2agy.converters.commands import (
 )
 from cc2agy.converters.hooks import write_hooks_data
 from cc2agy.converters.mcp import extract_servers_dict, write_mcp_data
-from cc2agy.converters.skills import migrate_skills_directory
+from cc2agy.converters.skills import migrate_root_skill, migrate_skills_directory
 from cc2agy.converters.variables import (
     DATA_DIR_NAME,
     VARIABLE_MARKERS,
@@ -347,16 +347,22 @@ def convert_plugin(
 
     # Migrate modular skills first (prioritize rich, multi-file modular skill definitions).
     # plugin.json "skills" adds directories to the default skills/ scan.
+    # A SKILL.md at the plugin root loads as one skill when there is no skills/ folder and no
+    # "skills" key, or when the "skills" key names the root ("." or "./").
     skill_dirs: List[Path] = []
     source_skills_dir = locations.skills_dir(source_dir)
     if source_skills_dir is not None:
         skill_dirs.append(source_skills_dir.resolve())
+    root_skill_file = locations.find_case_insensitive(source_dir, "SKILL.md")
+    root_skill = root_skill_file is not None and source_skills_dir is None and "skills" not in manifest_data
     for raw in _manifest_entries(manifest_data.get("skills")):
         path = _resolve_component_path(source_dir, raw, "skills", warnings)
         if path is None:
             continue
         if not path.is_dir():
             warnings.append(f"plugin.json 'skills': '{raw}' is not a directory; skipped.")
+        elif path == source_dir and root_skill_file is not None:
+            root_skill = True
         elif path not in skill_dirs:
             skill_dirs.append(path)
 
@@ -365,6 +371,15 @@ def convert_plugin(
         sk_results = migrate_skills_directory(s_dir, skills_dest, overwrite=overwrite, warnings=warnings)
         summary["skills_migrated"] += len(sk_results)
         modular_skill_names.update(r.parent.name if r.is_file() else r.name for r in sk_results)
+    if root_skill:
+        try:
+            res = migrate_root_skill(
+                root_skill_file, source_dir.name, skills_dest, target_plugin_dir, overwrite=overwrite, warnings=warnings
+            )
+            summary["skills_migrated"] += 1
+            modular_skill_names.add(res.parent.name)
+        except FileExistsError as e:
+            warnings.append(f"Skipped existing skill from {root_skill_file.name} (use --overwrite to replace): {e}")
 
     # Convert commands, honoring overwrite, but never replacing a modular skill of the same name.
     # plugin.json "commands" replaces the default scan of every command folder.
@@ -542,6 +557,8 @@ def convert_plugin(
         item_lower = item.name.lower()
         if not item.is_file() or item_lower in NOT_COPIED_FILES or item_lower.startswith(".git"):
             continue
+        if root_skill and item == root_skill_file:
+            continue  # converted into skills/<name>/SKILL.md above
         aux_dest = target_plugin_dir / item.name
         if aux_dest.exists() and not overwrite:
             continue

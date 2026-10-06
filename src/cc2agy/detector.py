@@ -209,7 +209,14 @@ def detect_claude_project(target_path: Path) -> ClaudeProjectInfo:
                 info.command_files.append(md_file)
 
     # 2. Discover skills directories
-    if target_path.is_dir() and ((target_path / "SKILL.md").exists() or (target_path / "skill.md").exists()):
+    # In a plugin, a root SKILL.md is the plugin's single skill only when there is no skills/
+    # folder, as in Claude Code
+    root_is_skill = target_path.is_dir() and (
+        (target_path / "SKILL.md").exists() or (target_path / "skill.md").exists()
+    )
+    if root_is_skill and locations.plugin_manifest(target_path) is not None:
+        root_is_skill = locations.skills_dir(target_path) is None
+    if root_is_skill:
         info.skills_dir = target_path
     else:
         info.skills_dir = locations.skills_dir(target_path)
