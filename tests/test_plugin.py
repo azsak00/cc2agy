@@ -341,6 +341,74 @@ class TestPluginConverter(unittest.TestCase):
             self.assertFalse((plugin_dir / "skills" / "deploy").exists())
             self.assertTrue(any("declares name 'deploy'" in w for w in summary["warnings"]))
 
+    def test_components_without_antigravity_equivalent_warn(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            plugin = self._make_plugin(tmp_path, {
+                "name": "plug",
+                "lspServers": {"go": {"command": "gopls", "extensionToLanguage": {".go": "go"}}},
+                "experimental": {"monitors": [{"name": "m", "command": "poll", "description": "d"}]},
+                "themes": "./themes/",
+                "channels": [{"server": "telegram"}],
+                "dependencies": ["secrets-vault"],
+                "settings": {"agent": "reviewer"},
+            })
+            for folder in ("output-styles", "workflows", "themes"):
+                (plugin / folder).mkdir()
+            (plugin / "output-styles" / "terse.md").write_text("Be terse.", encoding="utf-8")
+            (plugin / "settings.json").write_text('{"agent": "reviewer"}', encoding="utf-8")
+
+            _, summary = convert_plugin(plugin, tmp_path / "out", overwrite=True)
+
+            unsupported = [w for w in summary["warnings"] if "no Antigravity plugin equivalent" in w]
+            self.assertEqual(len(unsupported), 8, unsupported)
+            for origin in (
+                "output-styles/", "plugin.json 'lspServers'", "workflows/", "themes/",
+                "plugin.json 'themes'", "plugin.json 'experimental.monitors'", "settings.json",
+                "plugin.json 'settings'", "plugin.json 'channels'", "plugin.json 'dependencies'",
+            ):
+                self.assertTrue(any(origin in w for w in unsupported), origin)
+
+    def test_default_lsp_and_monitor_files_warn(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            plugin = self._make_plugin(tmp_path, {"name": "plug"})
+            (plugin / ".lsp.json").write_text("{}", encoding="utf-8")
+            (plugin / "monitors").mkdir()
+            (plugin / "monitors" / "monitors.json").write_text("[]", encoding="utf-8")
+
+            _, summary = convert_plugin(plugin, tmp_path / "out", overwrite=True)
+
+            unsupported = [w for w in summary["warnings"] if "no Antigravity plugin equivalent" in w]
+            self.assertEqual(len(unsupported), 2, unsupported)
+            self.assertTrue(any(".lsp.json" in w for w in unsupported))
+            self.assertTrue(any("monitors/monitors.json" in w for w in unsupported))
+
+    def test_plugin_without_unsupported_components_has_no_such_warning(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            plugin = self._make_plugin(tmp_path, {"name": "plug", "experimental": {}})
+            (plugin / "commands").mkdir()
+            (plugin / "commands" / "go.md").write_text("Go", encoding="utf-8")
+
+            _, summary = convert_plugin(plugin, tmp_path / "out", overwrite=True)
+
+            self.assertFalse(any("no Antigravity plugin equivalent" in w for w in summary["warnings"]))
+            self.assertFalse(any("PATH" in w for w in summary["warnings"]))
+
+    def test_bin_directory_is_copied_with_path_warning(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            plugin = self._make_plugin(tmp_path, {"name": "plug"})
+            (plugin / "bin").mkdir()
+            (plugin / "bin" / "deploy-tool").write_text("#!/bin/sh\necho ok\n", encoding="utf-8")
+
+            plugin_dir, summary = convert_plugin(plugin, tmp_path / "out", overwrite=True)
+
+            self.assertTrue((plugin_dir / "bin" / "deploy-tool").is_file())
+            self.assertIn("bin", summary["auxiliary_dirs_copied"])
+            self.assertTrue(any("bin/" in w and "PATH" in w for w in summary["warnings"]))
+
     def test_cli_convert_plugin_autodetect(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)

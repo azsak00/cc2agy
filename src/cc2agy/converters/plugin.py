@@ -41,7 +41,22 @@ AUXILIARY_DIRS = {
     "references",
     "docs",
     "context",
+    "bin",
 }
+
+# Claude Code plugin components with no Antigravity counterpart (an Antigravity plugin holds
+# only plugin.json, mcp_config.json, hooks.json, skills/, agents/ and rules/): label, default
+# location under the plugin root, plugin.json keys that declare them, and an extra note.
+UNSUPPORTED_COMPONENTS: List[Tuple[str, Optional[str], Tuple[str, ...], str]] = [
+    ("Output styles", "output-styles", ("outputStyles",), ""),
+    ("LSP servers", ".lsp.json", ("lspServers",), ""),
+    ("Workflows", "workflows", ("workflows",), ""),
+    ("Themes", "themes", ("experimental.themes", "themes"), ""),
+    ("Monitors", "monitors/monitors.json", ("experimental.monitors", "monitors"), ""),
+    ("Plugin settings", "settings.json", ("settings",), ""),
+    ("Channels", None, ("channels",), ""),
+    ("Dependencies", None, ("dependencies",), " Convert and install the plugins it depends on separately."),
+]
 
 
 def sanitize_skill_content(
@@ -94,6 +109,30 @@ def _resolve_component_path(source_dir: Path, raw: Any, field: str, warnings: Li
         warnings.append(f"plugin.json '{field}': path '{raw}' not found; skipped.")
         return None
     return candidate
+
+
+def _warn_unsupported_components(source_dir: Path, manifest_data: Dict[str, Any], warnings: List[str]) -> None:
+    """Warn once per component that Antigravity plugins cannot hold (see UNSUPPORTED_COMPONENTS)."""
+    experimental = manifest_data.get("experimental")
+    for label, default, keys, note in UNSUPPORTED_COMPONENTS:
+        origins: List[str] = []
+        if default is not None:
+            path = source_dir / default
+            if path.is_dir():
+                origins.append(f"{default}/")
+            elif path.is_file():
+                origins.append(default)
+        for key in keys:
+            if key.startswith("experimental."):
+                value = experimental.get(key.split(".", 1)[1]) if isinstance(experimental, dict) else None
+            else:
+                value = manifest_data.get(key)
+            if value not in (None, "", [], {}):
+                origins.append(f"plugin.json '{key}'")
+        if origins:
+            warnings.append(
+                f"{label} ({', '.join(origins)}): no Antigravity plugin equivalent; not converted.{note}"
+            )
 
 
 def _read_json(path: Path) -> Any:
@@ -503,6 +542,11 @@ def convert_plugin(
                             pass
 
                 summary["auxiliary_dirs_copied"].append(item.name)
+                if item_lower == "bin":
+                    warnings.append(
+                        f"{item.name}/ copied, but Antigravity does not put it on PATH: calls to its "
+                        f"executables by bare name will fail; use the full path ({dest_aux.as_posix()}/<file>)."
+                    )
             except Exception as e:
                 summary["warnings"].append(f"Failed to copy auxiliary directory '{item.name}': {e}")
 
@@ -517,5 +561,8 @@ def convert_plugin(
                     shutil.copy2(aux_src, aux_dest)
                 except Exception as e:
                     summary["warnings"].append(f"Failed to copy auxiliary file '{aux_src.name}': {e}")
+
+    # 11. Warn about components Antigravity plugins cannot hold
+    _warn_unsupported_components(source_dir, manifest_data, warnings)
 
     return target_plugin_dir, summary
