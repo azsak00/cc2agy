@@ -6,7 +6,7 @@ import json
 import re
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from cc2agy.converters.commands import (
     convert_command_file,
@@ -104,7 +104,7 @@ def convert_plugin(
     plugin_name = sanitize_skill_name(raw_name)
 
     # 2. Determine target plugin directory
-    if dest_dir.name == plugin_name:
+    if dest_dir.name == plugin_name or sanitize_skill_name(dest_dir.name) == plugin_name:
         target_plugin_dir = dest_dir
     elif dest_dir.name == "plugins":
         target_plugin_dir = dest_dir / plugin_name
@@ -150,21 +150,25 @@ def convert_plugin(
     skills_dest = target_plugin_dir / "skills"
     skills_dest.mkdir(parents=True, exist_ok=True)
 
-    # Convert commands
-    commands_dir = source_dir / "commands"
-    if not commands_dir.exists():
-        commands_dir = source_dir / ".claude" / "commands"
-    if commands_dir.exists() and commands_dir.is_dir():
-        cmd_results = convert_commands_directory(commands_dir, skills_dest, overwrite=overwrite)
-        summary["skills_migrated"] += len(cmd_results)
-
-    # Migrate modular skills
+    # Migrate modular skills first (prioritize rich, multi-file modular skill definitions)
+    modular_skill_names: Set[str] = set()
     source_skills_dir = source_dir / "skills"
     if not source_skills_dir.exists():
         source_skills_dir = source_dir / ".claude" / "skills"
     if source_skills_dir.exists() and source_skills_dir.is_dir():
         sk_results = migrate_skills_directory(source_skills_dir, skills_dest, overwrite=overwrite)
         summary["skills_migrated"] += len(sk_results)
+        modular_skill_names = {r.parent.name if r.is_file() else r.name for r in sk_results}
+
+    # Convert commands, honoring overwrite, but never replacing a modular skill of the same name
+    commands_dir = source_dir / "commands"
+    if not commands_dir.exists():
+        commands_dir = source_dir / ".claude" / "commands"
+    if commands_dir.exists() and commands_dir.is_dir():
+        cmd_results = convert_commands_directory(
+            commands_dir, skills_dest, overwrite=overwrite, skip_names=modular_skill_names
+        )
+        summary["skills_migrated"] += len(cmd_results)
 
     # Sanitize ${CLAUDE_PLUGIN_ROOT} in all SKILL.md files
     for skill_file in skills_dest.rglob("*.md"):

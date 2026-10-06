@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 
 def sanitize_skill_name(raw_name: str) -> str:
@@ -138,7 +138,8 @@ def adapt_prompt_arguments(body: str) -> str:
     protected = re.sub(r"`[^`\n]+`", _stash_code, protected)
 
     # 2. Check for legitimate argument variables with strict word boundary
-    has_arguments = bool(re.search(r"(?:\b\$ARGUMENTS\b|\$[1-9]\b)", protected))
+    # (no \b before "$": "$" is not a word character, so \b would demand a letter before it)
+    has_arguments = bool(re.search(r"(?:\$ARGUMENTS\b|\$[1-9]\b)", protected))
 
     if has_arguments:
         # Replace $ARGUMENTS
@@ -160,6 +161,17 @@ def adapt_prompt_arguments(body: str) -> str:
     return protected
 
 
+def _resolve_skill_name(meta: Dict[str, str], source_file: Path, custom_name: Optional[str] = None) -> str:
+    """Determine the canonical skill name for a command file."""
+    return sanitize_skill_name(custom_name or meta.get("name") or source_file.stem)
+
+
+def command_skill_name(source_file: Path) -> str:
+    """Return the skill name a command file converts to (same rule as convert_command_file)."""
+    meta, _ = parse_frontmatter(source_file.read_text(encoding="utf-8"))
+    return _resolve_skill_name(meta, source_file)
+
+
 def convert_command_file(
     source_file: Path,
     dest_skills_dir: Path,
@@ -171,8 +183,7 @@ def convert_command_file(
     meta, raw_body = parse_frontmatter(raw_content)
 
     # Determine canonical skill name
-    cmd_name = custom_name or meta.get("name") or source_file.stem
-    skill_name = sanitize_skill_name(cmd_name)
+    skill_name = _resolve_skill_name(meta, source_file, custom_name)
 
     # Generate description and adapt body
     description = extract_description(raw_body, meta, skill_name)
@@ -205,9 +216,19 @@ def convert_command_file(
 def convert_commands_directory(
     commands_dir: Path,
     dest_skills_dir: Path,
-    overwrite: bool = False
+    overwrite: bool = False,
+    skip_names: Optional[Set[str]] = None,
+    failures: Optional[List[Tuple[Path, Exception]]] = None,
 ) -> list[Path]:
-    """Scan and convert all markdown command files inside a directory (including nested subfolders)."""
+    """Scan and convert all markdown command files inside a directory (including nested subfolders).
+
+    Args:
+        skip_names: Skill names already provided elsewhere (e.g. modular skills);
+            commands resolving to one of these names are not converted.
+        failures: When given, per-file read/conversion errors are collected here as
+            (source_file, exception) and the remaining files are still converted.
+            When omitted, the first error is raised.
+    """
     if not commands_dir.exists() or not commands_dir.is_dir():
         return []
 
@@ -216,10 +237,16 @@ def convert_commands_directory(
     for md_file in sorted(commands_dir.rglob("*.md")):
         if md_file.is_file():
             try:
+                if skip_names and command_skill_name(md_file) in skip_names:
+                    continue
                 skill_path = convert_command_file(md_file, dest_skills_dir, overwrite=overwrite)
                 converted.append(skill_path)
             except FileExistsError:
                 # Safe skip when overwrite is False
                 continue
+            except (ValueError, OSError) as e:
+                if failures is None:
+                    raise
+                failures.append((md_file, e))
 
     return converted

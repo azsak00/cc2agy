@@ -13,9 +13,9 @@ import re
 import shutil
 import stat
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
-from .commands import parse_frontmatter, sanitize_skill_name
+from .commands import sanitize_skill_name
 
 
 def _remove_readonly(func, path, excinfo):
@@ -25,6 +25,37 @@ def _remove_readonly(func, path, excinfo):
         func(path)
     except Exception:
         pass
+
+
+_FRONTMATTER_RE = re.compile(r"\A(---\r?\n)(.*?)(\r?\n---[ \t]*(?:\r?\n|\Z))", re.DOTALL)
+_TOP_LEVEL_NAME_RE = re.compile(r"^name[ \t]*:[^\r\n]*", re.MULTILINE)
+
+
+def _set_frontmatter_name(content: str, skill_name: str) -> Optional[str]:
+    """Return content with the top-level frontmatter 'name' set to skill_name.
+
+    Only the 'name' line is touched; every other line (lists, nested keys, quoting,
+    line endings) is preserved verbatim. Returns None when no change is needed or
+    when the file has no frontmatter.
+    """
+    fm_match = _FRONTMATTER_RE.match(content)
+    if not fm_match:
+        return None
+
+    opening, block, closing = fm_match.groups()
+    new_line = f"name: {skill_name}"
+    name_match = _TOP_LEVEL_NAME_RE.search(block)
+
+    if name_match:
+        current = name_match.group(0).split(":", 1)[1].strip().strip("\"'")
+        if current == skill_name:
+            return None
+        new_block = block[:name_match.start()] + new_line + block[name_match.end():]
+    else:
+        newline = "\r\n" if opening.endswith("\r\n") else "\n"
+        new_block = new_line + newline + block
+
+    return opening + new_block + closing + content[fm_match.end():]
 
 
 def migrate_skill_folder(
@@ -42,6 +73,19 @@ def migrate_skill_folder(
 
     skill_name = sanitize_skill_name(source_skill_dir.name)
     target_skill_dir = dest_skills_dir / skill_name
+
+    # Refuse overlapping source/destination: the overwrite step below would delete the source
+    source_resolved = source_skill_dir.resolve()
+    target_resolved = target_skill_dir.resolve()
+    if (
+        source_resolved == target_resolved
+        or source_resolved.is_relative_to(target_resolved)
+        or target_resolved.is_relative_to(source_resolved)
+    ):
+        raise ValueError(
+            f"Source and destination skill folders overlap: '{source_skill_dir}' -> '{target_skill_dir}'. "
+            "Choose a destination outside the source skill folder."
+        )
 
     if target_skill_dir.exists() and not overwrite:
         raise FileExistsError(
@@ -63,22 +107,15 @@ def migrate_skill_folder(
                 f.rename(target_skill_file)
                 break
 
-    # Validate and normalize frontmatter name matching directory
+    # Normalize frontmatter name to match directory, rewriting only the 'name' line
     if target_skill_file.exists():
-        content = target_skill_file.read_text(encoding="utf-8", errors="replace")
-        meta, body = parse_frontmatter(content)
-        if meta and meta.get("name") != skill_name:
-            meta["name"] = skill_name
-            frontmatter_lines = ["---"]
-            for k, v in meta.items():
-                if "\n" in v or '"' in v:
-                    escaped_v = v.replace('"', '\\"')
-                    frontmatter_lines.append(f'{k}: "{escaped_v}"')
-                else:
-                    frontmatter_lines.append(f"{k}: {v}")
-            frontmatter_lines.append("---\n")
-            new_content = "\n".join(frontmatter_lines) + "\n" + body.strip() + "\n"
-            target_skill_file.write_text(new_content, encoding="utf-8")
+        # newline="" keeps the original line endings untouched on read and write
+        with open(target_skill_file, "r", encoding="utf-8", errors="replace", newline="") as f:
+            content = f.read()
+        new_content = _set_frontmatter_name(content, skill_name)
+        if new_content is not None:
+            with open(target_skill_file, "w", encoding="utf-8", newline="") as f:
+                f.write(new_content)
 
     return target_skill_file if target_skill_file.exists() else target_skill_dir
 
@@ -86,13 +123,18 @@ def migrate_skill_folder(
 def migrate_skills_directory(
     skills_source: Path,
     dest_skills_dir: Path,
-    overwrite: bool = False
+    overwrite: bool = False,
+    failures: Optional[List[Tuple[Path, Exception]]] = None,
 ) -> List[Path]:
     """Scan and migrate all modular skills from a source directory.
 
     Handles:
     1. A single skill directory containing SKILL.md.
     2. A directory containing multiple skill subdirectories.
+
+    When `failures` is given, per-skill errors are collected there as
+    (skill_folder, exception) and the remaining skills are still migrated.
+    When omitted, the first error is raised.
     """
     if not skills_source.exists() or not skills_source.is_dir():
         return []
@@ -102,21 +144,23 @@ def migrate_skills_directory(
 
     # Case 1: The source directory itself is a single skill folder
     if (skills_source / "SKILL.md").exists() or (skills_source / "skill.md").exists():
+        candidates = [skills_source]
+    # Case 2: The source directory contains multiple skill subdirectories
+    else:
+        candidates = [
+            item for item in sorted(skills_source.iterdir())
+            if item.is_dir() and ((item / "SKILL.md").exists() or (item / "skill.md").exists())
+        ]
+
+    for item in candidates:
         try:
-            res = migrate_skill_folder(skills_source, dest_skills_dir, overwrite=overwrite)
+            res = migrate_skill_folder(item, dest_skills_dir, overwrite=overwrite)
             migrated.append(res)
         except FileExistsError:
-            pass
-        return migrated
-
-    # Case 2: The source directory contains multiple skill subdirectories
-    for item in sorted(skills_source.iterdir()):
-        if item.is_dir():
-            if (item / "SKILL.md").exists() or (item / "skill.md").exists():
-                try:
-                    res = migrate_skill_folder(item, dest_skills_dir, overwrite=overwrite)
-                    migrated.append(res)
-                except FileExistsError:
-                    continue
+            continue
+        except (ValueError, OSError) as e:
+            if failures is None:
+                raise
+            failures.append((item, e))
 
     return migrated

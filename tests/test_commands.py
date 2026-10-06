@@ -109,6 +109,19 @@ class TestCommandsConverter(unittest.TestCase):
         self.assertIn("[User Arguments provided after the slash command]", adapted)
         self.assertIn("migrated from a Claude Code slash command", adapted)
 
+    def test_adapt_prompt_arguments_standalone_arguments(self):
+        """$ARGUMENTS alone, preceded by a space or at line start, must be adapted."""
+        adapted = adapt_prompt_arguments("Review the file $ARGUMENTS now.")
+        self.assertIn("Review the file [User Arguments provided after the slash command] now.", adapted)
+        self.assertIn("migrated from a Claude Code slash command", adapted)
+
+        adapted_line_start = adapt_prompt_arguments("$ARGUMENTS")
+        self.assertIn("[User Arguments provided after the slash command]", adapted_line_start)
+
+        # Longer identifiers are not placeholders
+        untouched = adapt_prompt_arguments("Set $ARGUMENTS_LIST manually.")
+        self.assertEqual(untouched, "Set $ARGUMENTS_LIST manually.")
+
     def test_adapt_prompt_arguments_protection(self):
         """Ensure monetary values ($50) and code blocks are not corrupted."""
         prompt = (

@@ -111,6 +111,52 @@ class TestSkillsMigrator(unittest.TestCase):
         content = res.read_text(encoding="utf-8")
         self.assertIn("name: my-plugin-skill", content)
 
+    def test_migrate_skill_rename_preserves_other_frontmatter(self):
+        """Renaming must touch only the 'name' line: lists and colon values stay intact."""
+        skill_src = self.base / "My_Skill"
+        skill_src.mkdir()
+        original = (
+            "---\n"
+            "name: Old_Name\n"
+            "description: \"Use when: reviewing a brief\"\n"
+            "allowed-tools:\n"
+            "  - Bash(git add:*)\n"
+            "  - Read\n"
+            "metadata:\n"
+            "  name: nested-value\n"
+            "---\n\n"
+            "# Body\n"
+        )
+        (skill_src / "SKILL.md").write_text(original, encoding="utf-8")
+
+        res = migrate_skill_folder(skill_src, self.base / "out")
+        content = res.read_text(encoding="utf-8")
+
+        self.assertEqual(content, original.replace("name: Old_Name", "name: my-skill", 1))
+
+    def test_migrate_skill_inserts_missing_name_and_keeps_crlf(self):
+        skill_src = self.base / "tool-x"
+        skill_src.mkdir()
+        (skill_src / "SKILL.md").write_bytes(b"---\r\ndescription: Desc\r\n---\r\nBody\r\n")
+
+        res = migrate_skill_folder(skill_src, self.base / "out")
+
+        self.assertEqual(res.read_bytes(), b"---\r\nname: tool-x\r\ndescription: Desc\r\n---\r\nBody\r\n")
+
+    def test_migrate_skill_same_source_and_dest_is_refused(self):
+        """Converting a skill onto itself with overwrite must never delete the source."""
+        skills_root = self.base / ".agents" / "skills"
+        skill_src = skills_root / "my-skill"
+        skill_src.mkdir(parents=True)
+        (skill_src / "SKILL.md").write_text("---\nname: my-skill\n---\nKeep me", encoding="utf-8")
+
+        with self.assertRaises(ValueError):
+            migrate_skill_folder(skill_src, skills_root, overwrite=True)
+        with self.assertRaises(ValueError):
+            migrate_skills_directory(skill_src, skills_root, overwrite=True)
+
+        self.assertEqual((skill_src / "SKILL.md").read_text(encoding="utf-8"), "---\nname: my-skill\n---\nKeep me")
+
     def test_cli_convert_modular_skills(self):
         plugin_root = self.base / "mcp-server-dev"
         plugin_root.mkdir()

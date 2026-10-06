@@ -124,6 +124,47 @@ class TestPluginConverter(unittest.TestCase):
             self.assertNotIn("---", agents_content)
             self.assertIn("# Rules", agents_content)
 
+    def test_reconvert_with_overwrite_updates_command_skills(self):
+        """--overwrite must refresh skills generated from commands, not keep the stale copy."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            source_plugin = tmp_path / "plug"
+            (source_plugin / ".claude-plugin").mkdir(parents=True)
+            (source_plugin / ".claude-plugin" / "plugin.json").write_text('{"name": "plug"}', encoding="utf-8")
+            (source_plugin / "commands").mkdir()
+            command = source_plugin / "commands" / "hello.md"
+            dest_root = tmp_path / "out"
+
+            command.write_text("# Hello\nVERSION 1", encoding="utf-8")
+            convert_plugin(source_plugin, dest_root)
+
+            command.write_text("# Hello\nVERSION 2", encoding="utf-8")
+            plugin_dir, summary = convert_plugin(source_plugin, dest_root, overwrite=True)
+
+            content = (plugin_dir / "skills" / "hello" / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn("VERSION 2", content)
+            self.assertEqual(summary["skills_migrated"], 1)
+
+    def test_overwrite_never_replaces_modular_skill_with_same_named_command(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            source_plugin = tmp_path / "plug"
+            (source_plugin / ".claude-plugin").mkdir(parents=True)
+            (source_plugin / ".claude-plugin" / "plugin.json").write_text('{"name": "plug"}', encoding="utf-8")
+            (source_plugin / "commands").mkdir()
+            (source_plugin / "commands" / "review.md").write_text("# Review\nFROM COMMAND", encoding="utf-8")
+            (source_plugin / "skills" / "review").mkdir(parents=True)
+            (source_plugin / "skills" / "review" / "SKILL.md").write_text(
+                "---\nname: review\ndescription: Modular\n---\nFROM MODULAR SKILL\n", encoding="utf-8"
+            )
+
+            plugin_dir, summary = convert_plugin(source_plugin, tmp_path / "out", overwrite=True)
+
+            content = (plugin_dir / "skills" / "review" / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn("FROM MODULAR SKILL", content)
+            self.assertNotIn("FROM COMMAND", content)
+            self.assertEqual(summary["skills_migrated"], 1)
+
     def test_cli_convert_plugin_autodetect(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)

@@ -96,6 +96,13 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _error_message(exc: Exception) -> str:
+    """Turn a conversion error into a short, user-facing message."""
+    if isinstance(exc, UnicodeDecodeError):
+        return "file is not valid UTF-8 text (re-save it with UTF-8 encoding)"
+    return str(exc)
+
+
 def handle_inspect(target: Path) -> int:
     info = detect_claude_project(target)
     print(info.summary())
@@ -156,6 +163,12 @@ def handle_convert(
     converted_rules = 0
     converted_mcp = 0
     converted_hooks = 0
+    failures = 0
+
+    def report_failure(what: str, source: Path, exc: Exception) -> None:
+        nonlocal failures
+        failures += 1
+        print(f"  [-] Failed to convert {what} '{source}': {_error_message(exc)}", file=sys.stderr)
 
     # 1. Handle single-file target
     if target.is_file():
@@ -170,6 +183,8 @@ def handle_convert(
                     converted_rules += 1
                 except FileExistsError as e:
                     print(f"  [!] Skipped existing rules file (use --overwrite to replace): {e}", file=sys.stderr)
+                except (ValueError, OSError) as e:
+                    report_failure("rules file", info.rules_file, e)
         # MCP file
         elif info.mcp_file:
             if do_mcp:
@@ -181,6 +196,8 @@ def handle_convert(
                     converted_mcp += 1
                 except FileExistsError as e:
                     print(f"  [!] Skipped existing MCP file (use --overwrite to replace): {e}", file=sys.stderr)
+                except (ValueError, OSError) as e:
+                    report_failure("MCP file", info.mcp_file, e)
         # Hooks file
         elif info.hooks_file:
             if do_hooks:
@@ -192,6 +209,8 @@ def handle_convert(
                     converted_hooks += 1
                 except FileExistsError as e:
                     print(f"  [!] Skipped existing hooks file (use --overwrite to replace): {e}", file=sys.stderr)
+                except (ValueError, OSError) as e:
+                    report_failure("hooks file", info.hooks_file, e)
         # Command file
         elif info.command_files:
             if do_skills:
@@ -203,6 +222,8 @@ def handle_convert(
                     converted_skills += 1
                 except FileExistsError as e:
                     print(f"  [!] Skipped existing skill (use --overwrite to replace): {e}", file=sys.stderr)
+                except (ValueError, OSError) as e:
+                    report_failure("command", info.command_files[0], e)
         # Direct SKILL.md file
         elif target.name.lower() == "skill.md":
             if do_skills:
@@ -214,6 +235,8 @@ def handle_convert(
                     converted_skills += 1
                 except FileExistsError as e:
                     print(f"  [!] Skipped existing skill (use --overwrite to replace): {e}", file=sys.stderr)
+                except (ValueError, OSError) as e:
+                    report_failure("skill", target.parent, e)
 
     # 2. Handle directory target
     else:
@@ -222,19 +245,29 @@ def handle_convert(
             skills_dest = dest if dest.name == "skills" else dest / "skills"
             skills_dest.mkdir(parents=True, exist_ok=True)
             for c_dir in info.commands_dirs:
-                results = convert_commands_directory(c_dir, skills_dest, overwrite=overwrite)
+                cmd_failures: list[tuple[Path, Exception]] = []
+                results = convert_commands_directory(
+                    c_dir, skills_dest, overwrite=overwrite, failures=cmd_failures
+                )
                 for res in results:
                     print(f"  [+] Skill generated: {res.parent.name} -> {res}")
                     converted_skills += 1
+                for src, exc in cmd_failures:
+                    report_failure("command", src, exc)
 
         # Migrate Existing Modular Skills
         if do_skills and info.has_skills and info.skills_dir:
             skills_dest = dest if dest.name == "skills" else dest / "skills"
             skills_dest.mkdir(parents=True, exist_ok=True)
-            results = migrate_skills_directory(info.skills_dir, skills_dest, overwrite=overwrite)
+            skill_failures: list[tuple[Path, Exception]] = []
+            results = migrate_skills_directory(
+                info.skills_dir, skills_dest, overwrite=overwrite, failures=skill_failures
+            )
             for res in results:
                 print(f"  [+] Skill migrated: {res.parent.name} -> {res}")
                 converted_skills += 1
+            for src, exc in skill_failures:
+                report_failure("skill", src, exc)
 
         # Convert Rules to AGENTS.md
         if do_rules and info.has_rules and info.rules_file:
@@ -246,6 +279,8 @@ def handle_convert(
                 converted_rules += 1
             except FileExistsError as e:
                 print(f"  [!] Skipped existing rules file (use --overwrite to replace): {e}", file=sys.stderr)
+            except (ValueError, OSError) as e:
+                report_failure("rules file", info.rules_file, e)
 
         # Convert MCP to mcp_config.json
         if do_mcp and info.has_mcp and info.mcp_file:
@@ -257,6 +292,8 @@ def handle_convert(
                 converted_mcp += 1
             except FileExistsError as e:
                 print(f"  [!] Skipped existing MCP file (use --overwrite to replace): {e}", file=sys.stderr)
+            except (ValueError, OSError) as e:
+                report_failure("MCP file", info.mcp_file, e)
 
         # Convert Hooks to hooks.json
         if do_hooks and info.has_hooks and info.hooks_file:
@@ -268,12 +305,17 @@ def handle_convert(
                 converted_hooks += 1
             except FileExistsError as e:
                 print(f"  [!] Skipped existing hooks file (use --overwrite to replace): {e}", file=sys.stderr)
+            except (ValueError, OSError) as e:
+                report_failure("hooks file", info.hooks_file, e)
 
-    print(
-        f"\n[OK] Conversion completed: {converted_skills} skill(s), "
-        f"{converted_rules} rule(s), {converted_mcp} MCP config(s), "
-        f"{converted_hooks} hooks config(s) generated."
+    counts = (
+        f"{converted_skills} skill(s), {converted_rules} rule(s), "
+        f"{converted_mcp} MCP config(s), {converted_hooks} hooks config(s) generated"
     )
+    if failures:
+        print(f"\n[!] Conversion finished with {failures} error(s): {counts}.", file=sys.stderr)
+        return 1
+    print(f"\n[OK] Conversion completed: {counts}.")
     return 0
 
 

@@ -1,5 +1,7 @@
 """Unit tests for Claude Code rules (CLAUDE.md -> AGENTS.md), MCP configuration, and integrated CLI."""
 
+import contextlib
+import io
 import json
 import tempfile
 import unittest
@@ -272,6 +274,61 @@ class TestCLIIntegration(unittest.TestCase):
             out_dir2 = root / "out2"
             main(["convert", str(mcp_json), "--dest", str(out_dir2)])
             self.assertTrue((out_dir2 / "mcp_config.json").exists())
+
+    def _run_cli_capturing_stderr(self, argv):
+        stderr = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(stderr):
+            code = main(argv)
+        return code, stderr.getvalue()
+
+    def test_cli_malformed_mcp_reports_error_and_continues(self):
+        """A broken .mcp.json must not crash the CLI nor block the other components."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "commands").mkdir()
+            (root / "commands" / "review.md").write_text("# Review\nCheck.", encoding="utf-8")
+            (root / ".mcp.json").write_text("{ broken", encoding="utf-8")
+
+            out_dir = root / "out"
+            code, err = self._run_cli_capturing_stderr(["convert", str(root), "--dest", str(out_dir)])
+
+            self.assertEqual(code, 1)
+            self.assertIn(".mcp.json", err)
+            self.assertIn("1 error(s)", err)
+            self.assertTrue((out_dir / "skills" / "review" / "SKILL.md").exists())
+            self.assertFalse((out_dir / "mcp_config.json").exists())
+
+    def test_cli_non_utf8_command_reports_file_and_continues(self):
+        """A command saved in Windows-1252 is reported by name; the other commands still convert."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "commands").mkdir()
+            (root / "commands" / "peticao.md").write_bytes("# Petição\nRedija.".encode("cp1252"))
+            (root / "commands" / "review.md").write_text("# Review\nCheck.", encoding="utf-8")
+
+            out_dir = root / "out"
+            code, err = self._run_cli_capturing_stderr(["convert", str(root), "--dest", str(out_dir)])
+
+            self.assertEqual(code, 1)
+            self.assertIn("peticao.md", err)
+            self.assertIn("not valid UTF-8", err)
+            self.assertTrue((out_dir / "skills" / "review" / "SKILL.md").exists())
+
+    def test_cli_skill_overlapping_destination_reports_error(self):
+        """The overlap refusal from migrate_skill_folder surfaces as a clean CLI error."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            skills_root = Path(tmp_dir) / ".agents" / "skills"
+            skill = skills_root / "my-skill"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text("---\nname: my-skill\n---\nKeep me", encoding="utf-8")
+
+            code, err = self._run_cli_capturing_stderr(
+                ["convert", str(skill), "--dest", str(skills_root), "--overwrite"]
+            )
+
+            self.assertEqual(code, 1)
+            self.assertIn("overlap", err)
+            self.assertTrue((skill / "SKILL.md").exists())
 
 
 if __name__ == "__main__":
