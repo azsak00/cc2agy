@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 EVENT_MAPPING = {
     "sessionstart": "PreInvocation",
+    "userpromptsubmit": "PreInvocation",
     "preinvocation": "PreInvocation",
     "postinvocation": "PostInvocation",
     "stop": "Stop",
@@ -73,13 +74,29 @@ def extract_flat_handlers(items: List[Any], warnings: List[str]) -> List[Dict[st
     return handlers
 
 
+def sanitize_matcher(matcher: str) -> str:
+    """Map Claude tool names in matchers to Antigravity tool names."""
+    if not matcher or matcher == "*":
+        return matcher
+    mapping = [
+        (r"\bEdit\b", "replace_file_content"),
+        (r"\bWrite\b", "write_to_file"),
+        (r"\bBash\b", "run_command"),
+        (r"\bRead\b", "view_file"),
+    ]
+    cleaned = matcher
+    for pat, repl in mapping:
+        cleaned = re.sub(pat, repl, cleaned)
+    return cleaned
+
+
 def extract_grouped_handlers(items: List[Any], warnings: List[str]) -> List[Dict[str, Any]]:
     """Extract grouped matcher handler objects for PreToolUse and PostToolUse."""
     groups: List[Dict[str, Any]] = []
     for item in items:
         if not isinstance(item, dict):
             continue
-        matcher = item.get("matcher", "*")
+        matcher = sanitize_matcher(item.get("matcher", "*"))
         sub_hooks = item.get("hooks", [])
         handlers: List[Dict[str, Any]] = []
         if isinstance(sub_hooks, list):
@@ -137,11 +154,17 @@ def convert_hooks_data(
         if mapped_event in ("PreToolUse", "PostToolUse"):
             groups = extract_grouped_handlers(event_content, warnings)
             if groups:
-                converted_events[mapped_event] = groups
+                if mapped_event in converted_events:
+                    converted_events[mapped_event].extend(groups)
+                else:
+                    converted_events[mapped_event] = groups
         else:
             handlers = extract_flat_handlers(event_content, warnings)
             if handlers:
-                converted_events[mapped_event] = handlers
+                if mapped_event in converted_events:
+                    converted_events[mapped_event].extend(handlers)
+                else:
+                    converted_events[mapped_event] = handlers
 
     hook_id = f"{plugin_name}-hooks"
     final_hooks_config = {
