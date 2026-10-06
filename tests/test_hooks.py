@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,7 +14,15 @@ from cc2agy.converters.hooks import (
     convert_hooks_data,
     convert_hooks_file,
     sanitize_hook_command,
+    sanitize_matcher,
+    write_hooks_data,
 )
+
+
+def _decode_wrapped(command: str):
+    """Return (mode, original command) from a context-helper hook command."""
+    mode, encoded = command.split()[-2:]
+    return mode, base64.urlsafe_b64decode(encoded).decode("utf-8")
 
 
 class TestHooksConverter(unittest.TestCase):
@@ -109,7 +120,84 @@ class TestHooksConverter(unittest.TestCase):
 
             self.assertIn("demo-hooks", saved_data)
             self.assertIn("PreInvocation", saved_data["demo-hooks"])
-            self.assertEqual(saved_data["demo-hooks"]["PreInvocation"][0]["command"], "python test.py")
+            # SessionStart runs through the generated context helper, once per conversation
+            command = saved_data["demo-hooks"]["PreInvocation"][0]["command"]
+            self.assertEqual(_decode_wrapped(command), ("once", "python test.py"))
+            self.assertTrue((dest_dir / "cc2agy_hooks" / "context_hook.py").exists())
+
+    def test_sanitize_hook_command_absolute_root(self):
+        root = Path(tempfile.gettempdir()) / "my plugin"
+        cmd = 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/start.sh" $CLAUDE_PLUGIN_ROOT'
+        expected = f'bash "{root.as_posix()}/hooks/start.sh" {root.as_posix()}'
+        self.assertEqual(sanitize_hook_command(cmd, root), expected)
+        self.assertNotIn("\\", sanitize_hook_command(cmd, root))
+
+    def test_edit_matchers_cover_both_antigravity_edit_tools(self):
+        self.assertEqual(sanitize_matcher("Edit"), "(?:replace_file_content|multi_replace_file_content)")
+        self.assertEqual(sanitize_matcher("MultiEdit"), "multi_replace_file_content")
+        self.assertEqual(
+            sanitize_matcher("Write|Edit"),
+            "write_to_file|(?:replace_file_content|multi_replace_file_content)",
+        )
+
+    def test_session_start_matchers_without_startup_are_skipped(self):
+        raw = {"SessionStart": [
+            {"matcher": "startup|resume", "hooks": [{"command": "echo a"}]},
+            {"matcher": "compact", "hooks": [{"command": "echo b"}]},
+            {"hooks": [{"command": "echo c"}]},
+        ]}
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            converted, warnings = convert_hooks_data(raw, "p", Path(tmp_dir), Path(tmp_dir))
+        commands = [_decode_wrapped(h["command"])[1] for h in converted["p-hooks"]["PreInvocation"]]
+        self.assertEqual(commands, ["echo a", "echo c"])
+        self.assertTrue(any("'compact'" in w for w in warnings))
+
+    def test_user_prompt_submit_runs_always_with_warning(self):
+        raw = {"UserPromptSubmit": [{"hooks": [{"command": "echo ctx"}]}]}
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            converted, warnings = convert_hooks_data(raw, "p", Path(tmp_dir), Path(tmp_dir))
+        self.assertEqual(_decode_wrapped(converted["p-hooks"]["PreInvocation"][0]["command"]), ("always", "echo ctx"))
+        self.assertTrue(any("every model invocation" in w for w in warnings))
+
+    def test_unquoted_plugin_root_with_spaces_warns(self):
+        raw = {"Stop": [{"hooks": [{"command": "bash ${CLAUDE_PLUGIN_ROOT}/stop.sh"}]}]}
+        root = Path(tempfile.gettempdir()) / "my plugin"
+        _, warnings = convert_hooks_data(raw, "p", root)
+        self.assertTrue(any("without quotes" in w for w in warnings))
+
+        quoted = {"Stop": [{"hooks": [{"command": 'bash "${CLAUDE_PLUGIN_ROOT}/stop.sh"'}]}]}
+        _, warnings = convert_hooks_data(quoted, "p", root)
+        self.assertFalse(any("without quotes" in w for w in warnings))
+
+    def test_standalone_hooks_file_points_to_source_plugin_root(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            plugin = Path(tmp_dir) / "plug"
+            (plugin / "hooks").mkdir(parents=True)
+            source = plugin / "hooks" / "hooks.json"
+            source.write_text(json.dumps({"hooks": {"Stop": [
+                {"hooks": [{"command": 'bash "${CLAUDE_PLUGIN_ROOT}/hooks/stop.sh"'}]}]}}), encoding="utf-8")
+
+            res, _ = convert_hooks_file(source, Path(tmp_dir) / "out", plugin_name="plug")
+            command = json.loads(res.read_text(encoding="utf-8"))["plug-hooks"]["Stop"][0]["command"]
+            self.assertEqual(command, f'bash "{plugin.resolve().as_posix()}/hooks/stop.sh"')
+
+    def test_context_helper_runs_once_and_injects_output(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            dest = Path(tmp_dir) / "out"
+            write_hooks_data({"SessionStart": [{"hooks": [{"command": "echo ctx"}]}]}, dest, "p")
+            helper = dest / "cc2agy_hooks" / "context_hook.py"
+            encoded = base64.urlsafe_b64encode(b"echo ctx").decode("ascii")
+
+            def run(invocation_num):
+                result = subprocess.run(
+                    [sys.executable, str(helper), "once", encoded],
+                    input=json.dumps({"invocationNum": invocation_num}),
+                    capture_output=True, text=True, check=True,
+                )
+                return json.loads(result.stdout)
+
+            self.assertEqual(run(0), {"injectSteps": [{"ephemeralMessage": "ctx"}]})
+            self.assertEqual(run(1), {})
 
     def test_hooks_overwrite_protection(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

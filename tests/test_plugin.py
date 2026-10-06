@@ -24,6 +24,12 @@ class TestPluginConverter(unittest.TestCase):
         expected2 = 'Link to [tool](../../scripts/tool.py)'
         self.assertEqual(sanitize_skill_content(text2), expected2)
 
+        root = Path(tempfile.gettempdir()) / "plugins" / "demo"
+        self.assertEqual(
+            sanitize_skill_content(text, root),
+            f'1. Run script: `python3 "{root.as_posix()}/scripts/lint.py"`',
+        )
+
     def test_convert_full_plugin_complete_structure(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
@@ -120,7 +126,7 @@ class TestPluginConverter(unittest.TestCase):
             # Verify SKILL.md path sanitization
             linter_content = (plugin_dir / "skills" / "linter" / "SKILL.md").read_text(encoding="utf-8")
             self.assertNotIn("CLAUDE_PLUGIN_ROOT", linter_content)
-            self.assertIn('../../scripts/lint.py', linter_content)
+            self.assertIn(f'"{plugin_dir.as_posix()}/scripts/lint.py"', linter_content)
 
             # Verify AGENTS.md frontmatter stripped
             agents_content = (plugin_dir / "rules" / "AGENTS.md").read_text(encoding="utf-8")
@@ -228,7 +234,9 @@ class TestPluginConverter(unittest.TestCase):
             self.assertEqual(set(events), {"Stop", "PreToolUse", "PostToolUse"})
             self.assertEqual(events["PreToolUse"][0]["matcher"], "run_command")
             self.assertEqual(events["PostToolUse"][0]["matcher"], "write_to_file")
-            self.assertEqual(events["PostToolUse"][0]["hooks"][0]["command"], '"."/scripts/format.sh')
+            self.assertEqual(
+                events["PostToolUse"][0]["hooks"][0]["command"], f'"{plugin_dir.as_posix()}"/scripts/format.sh'
+            )
             self.assertEqual(summary["hooks_migrated"], 1)
 
     def test_manifest_commands_map_and_paths_replace_default_folder(self):

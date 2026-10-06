@@ -35,20 +35,18 @@ AUXILIARY_DIRS = {
 }
 
 
-def sanitize_skill_content(content: str) -> str:
-    """Sanitize ${CLAUDE_PLUGIN_ROOT} references in SKILL.md.
+def sanitize_skill_content(content: str, plugin_root: Optional[Path] = None) -> str:
+    """Replace ${CLAUDE_PLUGIN_ROOT} references in SKILL.md.
 
-    Since skills in a plugin reside in skills/<skill_name>/SKILL.md,
-    the relative path back to the plugin root is ../../.
+    With plugin_root, the variable becomes that absolute folder (forward slashes): paths in a
+    skill are followed by the agent from wherever it runs commands, which Antigravity does not
+    tie to the skill folder. Without plugin_root, the legacy relative form (../..) is kept,
+    since skills reside in skills/<skill_name>/SKILL.md.
     """
     if not content:
         return content
-
-    # Replace ${CLAUDE_PLUGIN_ROOT}/ or $CLAUDE_PLUGIN_ROOT/ with ../../
-    cleaned = re.sub(r"\$\{?CLAUDE_PLUGIN_ROOT\}?/", "../../", content)
-    # Replace standalone ${CLAUDE_PLUGIN_ROOT} with ../..
-    cleaned = re.sub(r"\$\{?CLAUDE_PLUGIN_ROOT\}?", "../..", cleaned)
-    return cleaned
+    root = plugin_root.as_posix() if plugin_root is not None else "../.."
+    return re.sub(r"\$\{?CLAUDE_PLUGIN_ROOT\}?", lambda _: root, content)
 
 
 def find_plugin_manifest(source_dir: Path) -> Optional[Path]:
@@ -296,7 +294,7 @@ def convert_plugin(
             try:
                 content = skill_file.read_text(encoding="utf-8", errors="ignore")
                 if "CLAUDE_PLUGIN_ROOT" in content:
-                    updated = sanitize_skill_content(content)
+                    updated = sanitize_skill_content(content, target_plugin_dir)
                     skill_file.write_text(updated, encoding="utf-8")
             except Exception as e:
                 summary["warnings"].append(f"Could not sanitize skill {skill_file.name}: {e}")
