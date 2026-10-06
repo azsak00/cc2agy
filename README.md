@@ -1,278 +1,322 @@
-# cc2agy 🚀
+# cc2agy
 
-> **Bridge and migration tool from Anthropic Claude Code to Google Antigravity.**  
-> *Seamlessly convert Claude Code commands, plugins, rules, and MCP configurations into native Google Antigravity Skills and configurations in seconds.*
+> **Migration tool from Anthropic Claude Code to Google Antigravity.**
+> Converts Claude Code commands, skills, subagents, rules, MCP servers, hooks and whole plugins into the files Antigravity reads.
 
 [![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Zero Dependencies](https://img.shields.io/badge/dependencies-zero-brightgreen.svg)]()
 [![Platform: Win | Mac | Linux](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)]()
-[![Tests: 41 Passing](https://img.shields.io/badge/tests-41%20passed-brightgreen.svg)]()
-[![Antigravity 2.0 Ready](https://img.shields.io/badge/Antigravity-2.0%20Ready-blueviolet.svg)](https://antigravity.google)
+
+- [English documentation](#what-is-cc2agy)
+- [Guia em português](#guia-em-português)
 
 ---
 
-## 🌐 Language / Idioma
-- [English Documentation](#-what-is-cc2agy)
-- [Guia Operacional em Português](#-guia-operacional-em-português)
+## What is cc2agy?
+
+Claude Code users build up slash commands, skills, subagents, project instructions (`CLAUDE.md`), MCP servers and hooks, often packaged as plugins. **cc2agy** turns them into native Google Antigravity resources so they can be reused without rewriting them.
+
+Commands become Antigravity **Skills** (`SKILL.md`), not workflows: Antigravity's documentation states that "Workflows are deprecated and will be retired on November 1, 2026" ([Workflows to skills migration](https://antigravity.google/docs/migration/workflows-to-skills/)).
+
+cc2agy is written in pure Python (standard library only). It never overwrites a file unless you pass `--overwrite`, and every conversion prints a warning for each part that could not be converted exactly.
 
 ---
 
-## ⚡ What is cc2agy?
+## What gets converted
 
-Anthropic's **Claude Code** has built a vibrant ecosystem of custom slash commands, plugins, project instructions, and Model Context Protocol (MCP) servers. However, developers and legal/knowledge professionals adopting **Google Antigravity** face a challenge: how to reuse existing tools and workflows without re-engineering everything from scratch.
+| Claude Code | Antigravity | How |
+| :--- | :--- | :--- |
+| **Plugin** (folder with `.claude-plugin/plugin.json`) | `plugins/<name>/` | Converts every component below into the plugin folder and copies every other folder and root file of the plugin (`scripts/`, `server/`, `bin/`, `node_modules/`, `LICENSE`, ...). The generated `plugin.json` keeps only `name` and `description`, the fields Antigravity's schema allows. Components declared in the Claude Code `plugin.json` (`commands`, `skills`, `agents`, `hooks`, `mcpServers`) are honored. |
+| **Commands** (`commands/*.md`, `.claude/commands/*.md`, `prompts/*.md`) | `skills/<name>/SKILL.md` | The skill name comes from the file path, as in Claude Code: `commands/git/commit.md` (`/git:commit`) becomes `git-commit`. `description`, `when_to_use` and `argument-hint` go into the skill description. Argument placeholders follow Claude Code: `$ARGUMENTS`, `$ARGUMENTS[N]`, `$N` (zero-based: `$0` is the first argument) and named arguments from `arguments`; `\$1`, code blocks and amounts such as `$50` are left alone. |
+| **Skills** (`skills/<name>/SKILL.md`) | `skills/<name>/SKILL.md` | Copies the whole skill folder (`references/`, `scripts/`, ...) and aligns `name:` with the folder name. |
+| **Subagents** (`agents/*.md`, `.claude/agents/*.md`) | `agents/<name>.md` | Maps tool names (`Read` to `view_file`, `Bash` to `run_command`, `Edit` to `replace_file_content` and `multi_replace_file_content`, ...) and removes tools Antigravity lacks, with a warning. `haiku` becomes `flash`; `sonnet`, `opus` and `fable` become `pro` (an assumed correspondence, not documented). |
+| **Rules** (`CLAUDE.md`) | `AGENTS.md` (`rules/AGENTS.md` with `--install`) | Removes YAML frontmatter, adds a provenance comment and warns when the file exceeds Antigravity's 24 KB per-file limit ([Rules](https://antigravity.google/docs/rules)). |
+| **MCP servers** (`.mcp.json`, `mcp.json`, `.claude.json`) | `mcp_config.json` | Writes the `mcpServers` root; remote servers get `serverUrl` and keep their `headers`. Warns about plaintext credentials and about `headersHelper` and `oauth`, which are not converted. |
+| **Hooks** (`hooks/hooks.json`, `.claude/settings.json`, `.claude/settings.local.json`) | `hooks.json` | See [Hooks](#hooks). |
+| **Plugin variables** | resolved values | `${CLAUDE_PLUGIN_ROOT}` becomes the absolute path of the converted plugin; `${CLAUDE_PLUGIN_DATA}` becomes its `cc2agy_data/` folder; `${user_config.KEY}` takes the value from `--user-config` or the declared `default`. |
 
-Legacy bridges attempted to convert commands into Antigravity *workflows* (`.md` files in `workflows/`), a format that Google has formally deprecated in favor of native **Skills** (`SKILL.md`).
+Components with no Antigravity equivalent (output styles, LSP servers, workflows, themes, monitors, plugin `settings.json`, `channels`, `dependencies`, `.mcpb` and `.dxt` bundles) are reported, not converted. `bin/` is copied, but Antigravity does not put it on the `PATH`.
 
-**cc2agy** is a modern, open-source bridge tool written in **pure Python** (standard library only, zero external runtime dependencies) that translates Claude Code workflows and plugins directly into canonical Antigravity resources:
+### Hooks
 
-- 📦 **Full Plugin Mode (`plugins/<name>/`):** Packages entire Claude Code plugins into official Antigravity plugins, generating canonical `plugin.json` manifests, internal `rules/AGENTS.md`, and preserving auxiliary directories (`scripts/`, `templates/`, `espec/`, `agents/`).
-- 🔄 **Lifecycle Hooks Migration:** Translates Claude Code hooks (`hooks/hooks.json`) into canonical Antigravity `hooks.json`, automatically mapping `SessionStart` ➔ `PreInvocation`, normalizing `Stop` handlers, and sanitizing path variables (`${CLAUDE_PLUGIN_ROOT}`).
-- 🪄 **Commands to Native Skills:** Converts Claude Code commands (`commands/*.md`) into full Antigravity **Skills** (`skills/<name>/SKILL.md`) with valid YAML frontmatter (`name`, `description`), preserving prompt parameters (`$1, $2, ...` and `$*`) while shielding currency signs (`$50`) and shell scripts (`awk`).
-- 📋 **Rules to Workspace Governance:** Converts `CLAUDE.md` files into clean, YAML-free `AGENTS.md` governance files, monitoring context budget limits (< 24 KB) and adding non-intrusive provenance comments.
-- 🔌 **MCP Server Normalization:** Translates `.mcp.json` and `.claude.json` into canonical `mcp_config.json` configurations with the required `"mcpServers"` root key, mapping remote SSE endpoints to `serverUrl` and detecting unescaped plaintext tokens.
-- 🛡️ **Zero Dependencies & Safe:** Operates strictly on Python 3.10+ standard libraries. Includes strict overwrite protection (`--overwrite`), ASCII-safe Unicode transliteration (`validação` ➔ `validacao`), and cross-platform path handling for Windows, macOS, and Linux.
+Antigravity's hook events, input and output differ from Claude Code's. cc2agy writes a small runner, `cc2agy_hooks/hook_runner.py`, next to `hooks.json`, and every converted Claude Code hook runs through it.
+
+| Claude Code event | Antigravity event | Behavior |
+| :--- | :--- | :--- |
+| `SessionStart` | `PreInvocation` | Runs once per conversation; its output becomes context. Only the `startup` source exists in Antigravity. |
+| `UserPromptSubmit` | `PreInvocation` | Runs before every model call, not once per message; its output becomes context. |
+| `PreToolUse` | `PreToolUse` | Exit code 2, `permissionDecision` (`allow`, `deny`, `ask`) and the older `decision` field become Antigravity's `decision`. `updatedInput` becomes `ask`, since Antigravity cannot change the tool input. |
+| `PostToolUse` | `PostToolUse` | Runs for its side effects; what it asks for (blocking, extra context) has no equivalent and is reported on stderr. |
+| `Stop` | `Stop` | A request to keep working (exit code 2 or `decision: "block"`) becomes `decision: "continue"`; `stop_hook_active` is emulated. |
+
+The runner also gives hooks what Claude Code gives them:
+- Claude Code input fields (`session_id`, `cwd`, `hook_event_name`, `tool_name`, `tool_input`, ...). Tool names and arguments are translated for `Read`, `Write`, `Edit`, `Bash`, `WebFetch` and `WebSearch`; other tools keep their Antigravity names.
+- The project folder as working directory.
+- The environment variables `CLAUDE_PROJECT_DIR`, `CLAUDE_PLUGIN_ROOT`, `CLAUDE_PLUGIN_DATA` and `CLAUDE_PLUGIN_OPTION_<KEY>`.
+- UTF-8 input and output on any system code page.
+
+`SessionStart` and `Stop` hooks are skipped inside subagents, as in Claude Code. Matchers are translated (`Bash` to `run_command`, `Read` to `view_file`, ...).
+
+Project hooks from `.claude/settings.json` and `.claude/settings.local.json` are added up as Claude Code does: a hook defined in both files runs once, and `disableAllHooks` follows settings precedence (the local file wins). Other settings keys (`permissions`, `env`, ...) are not converted. Hook types other than `command` (`http`, `prompt`, `agent`, `mcp_tool`) are reported and skipped.
 
 ---
 
-## 🗺️ Architectural Mapping Matrix
+## Quick start
 
-| Claude Code Resource | Source Format | Canonical Antigravity Target | Conversion Behavior |
-| :--- | :--- | :--- | :--- |
-| **Full Plugin Package** | Plugin folder (`.claude-plugin/plugin.json`) | `plugins/<name>/` | Creates canonical `plugin.json`, packages all skills, rules, MCP configs, hooks, and preserves auxiliary trees (`scripts/`, `templates/`, `espec/`). |
-| **Lifecycle Hooks** | `hooks/hooks.json` | `hooks.json` | Maps `SessionStart` to `PreInvocation`, unwraps flat handlers for `Stop`, and sanitizes `${CLAUDE_PLUGIN_ROOT}` variables to relative paths. |
-| **User Slash Commands** | `commands/<name>.md` | `skills/<name>/SKILL.md` | Generates modern Antigravity Skills with YAML frontmatter (`name`, `description`), enabling native slash-command invocation (`/<command>`). |
-| **Modular Skills** | `skills/<name>/SKILL.md` | `skills/<name>/SKILL.md` | Preserves folder structure, auxiliary scripts (`scripts/`), progressive disclosure references (`references/`), and adapts relative links. |
-| **Project Rules** | `CLAUDE.md` | `AGENTS.md` or `rules/AGENTS.md` | Strips unsupported YAML frontmatter, formats as imperative governance rules, and warns if context budget exceeds 24 KB. |
-| **MCP Server Config** | `.mcp.json` / `.claude.json` | `mcp_config.json` | Normalizes server definitions into standard root `{"mcpServers": ...}`, maps SSE `url`/`endpoint` to `serverUrl`, and alerts on plaintext credentials. |
-
-
----
-
-## 🚀 Quick Start (1 Minute)
-
-### 1. Direct Execution (Zero-Config, No Installation Required)
-
-Clone the repository and run directly with Python:
+Run straight from a clone (no installation):
 
 ```bash
-# Clone the repository
 git clone https://github.com/azsak00/cc2agy.git
 cd cc2agy
-
-# Inspect discovered Claude Code resources in a plugin or folder
 python cc2agy.py inspect path/to/claude-plugin
-
-# Convert all discovered resources into Antigravity assets
-python cc2agy.py convert path/to/claude-plugin --dest path/to/destination/
+python cc2agy.py convert path/to/claude-plugin --install project
 ```
 
-### 2. Global / Virtualenv Installation (Editable Mode)
-
-Install as a command-line executable via pip:
+Or install the `cc2agy` command:
 
 ```bash
 pip install -e .
-cc2agy inspect path/to/claude-plugin
-cc2agy convert path/to/claude-plugin --dest path/to/destination/
+cc2agy convert path/to/claude-plugin --install project
 ```
+
+`--install project` writes into `.agents/` of the **current folder**, so run it from the Antigravity workspace that should use the converted files.
 
 ---
 
-## 🛠️ CLI Command Reference
+## CLI reference
 
-### `inspect` — Discover & Analyze
-Scans a target directory or file, reporting all detected commands, rules, and MCP configurations without making any changes.
+### `inspect`
+
+Lists the Claude Code components found in a folder or file, without changing anything. Exits with code 1 when nothing is found.
 
 ```bash
-python cc2agy.py inspect <path-to-file-or-dir>
+python cc2agy.py inspect <path>
 ```
 
-**Example Output:**
+### `convert`
+
+```bash
+python cc2agy.py convert <path> [options]
+```
+
+| Option | Default | Description |
+| :--- | :--- | :--- |
+| `--dest`, `-d` | `./output` | Destination folder. A plugin goes to `<dest>/plugins/<name>/`. |
+| `--install project\|user` | | Convert straight into the folders Antigravity reads: `.agents/` in the current folder (`project`) or `~/.gemini/config/` (`user`). An existing `mcp_config.json` or `hooks.json` there is merged, not replaced: servers and hook groups already present are kept, and the previous file is saved as `<file>.cc2agy.bak`. Cannot be combined with `--dest`. |
+| `--overwrite` | off | Replace files, skills, MCP servers and hook groups that already exist in the destination. |
+| `--plugin` | off | Package the target as a plugin even without `.claude-plugin/plugin.json`. |
+| `--user-config KEY=VALUE` | | Value for a `userConfig` key of the plugin (repeatable). Antigravity cannot prompt for these values, so they are written into the converted plugin. |
+| `--skills-only` | off | Convert only commands and skills. |
+| `--rules-only` | off | Convert only `CLAUDE.md`. |
+| `--mcp-only` | off | Convert only MCP servers. |
+| `--hooks-only` | off | Convert only hooks. |
+| `--version`, `-v` | | Show the version. |
+
+Subagents are converted only when no `--*-only` filter is used. A folder with `.claude-plugin/plugin.json` is converted as a plugin unless a filter is used.
+
+---
+
+## Examples
+
+The outputs below come from real runs of the current version, with paths shortened and some lines left out.
+
+### 1. An official plugin into the current workspace
+
+```bash
+python cc2agy.py convert path/to/commit-commands --install project
+```
+
 ```text
-Analysis of: ~/.claude/plugins/marketplaces/claude-plugins-official/plugins/commit-commands
-  [+] Claude Code components found:
-    - Commands (3 files in [commands]):
-        /clean_gone
-        /commit-push-pr
-        /commit
+  [+] Full Plugin packaged: commit-commands -> <workspace>\.agents\plugins\commit-commands
+      - Skills/Commands: 3
+      [!] Warning: Command '...\commands\commit.md': fields with no Antigravity skill equivalent were dropped: allowed-tools.
 ```
 
-### `convert` — Migrate to Antigravity
-Converts discovered Claude Code assets into canonical Antigravity files.
+The three commands become `skills/clean-gone`, `skills/commit` and `skills/commit-push-pr` inside the plugin; `LICENSE` and `README.md` are copied.
+
+### 2. A project folder
+
+A project with two commands (`review.md` and `git/commit.md`), a subagent, a hook in `.claude/settings.json`, `CLAUDE.md` and `.mcp.json`, converted from inside the project:
 
 ```bash
-python cc2agy.py convert <target> [OPTIONS]
+cd my-app
+python path/to/cc2agy.py convert . --install project
 ```
 
-#### Available Options:
-| Flag | Short | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `--dest` | `-d` | `./output` | Destination directory where converted Antigravity assets will be saved. |
-| `--overwrite` | | `False` | Overwrite existing files in destination directory without error. |
-| `--plugin` | | `False` | Package target as a full Antigravity plugin (`plugins/<name>/`). |
-| `--skills-only` | | `False` | Convert only commands/skills into Antigravity Skills. |
-| `--rules-only` | | `False` | Convert only `CLAUDE.md` into `AGENTS.md` governance rules. |
-| `--mcp-only` | | `False` | Convert only MCP configuration into `mcp_config.json`. |
-| `--hooks-only` | | `False` | Convert only lifecycle hooks into canonical `hooks.json`. |
-| `--version` | `-v` | | Show current cc2agy version. |
+```text
+  [+] Skill generated: git-commit -> <my-app>\.agents\skills\git-commit\SKILL.md
+  [+] Skill generated: review -> <my-app>\.agents\skills\review\SKILL.md
+  [+] Rules generated: AGENTS.md -> <my-app>\.agents\rules\AGENTS.md
+  [+] MCP config generated: mcp_config.json -> <my-app>\.agents\mcp_config.json
+  [+] Hooks generated: hooks.json -> <my-app>\.agents\hooks.json
+      [!] Warning: settings.json: only hooks are converted; not converted: permissions.
+  [+] Subagent generated: checker -> <my-app>\.agents\agents\checker.md
+      [!] Warning: Agent 'checker': tools without an Antigravity equivalent were removed: TodoWrite.
+```
+
+The subagent's `tools: Read, Grep, Glob, TodoWrite` and `model: haiku` became `view_file`, `grep_search`, `find_by_name`, `list_dir` and `model: flash`.
+
+### 3. A plugin with `userConfig`
+
+The plugin declares `notes_dir` (no default) and `max_results` (default `10`), and its MCP server uses `${CLAUDE_PLUGIN_ROOT}` and both values:
+
+```bash
+python cc2agy.py convert notes-plugin --dest out --user-config notes_dir=D:/Notes
+```
+
+The generated `out/plugins/notes/mcp_config.json`:
+
+```json
+"search": {
+  "command": "node",
+  "args": ["<cwd>/out/plugins/notes/server/index.js", "--dir", "D:/Notes", "--max", "10"],
+  "env": {
+    "CLAUDE_PLUGIN_ROOT": "<cwd>/out/plugins/notes",
+    "CLAUDE_PLUGIN_DATA": "<cwd>/out/plugins/notes/cc2agy_data"
+  }
+}
+```
+
+Without `--user-config notes_dir=...`, the placeholder stays as is and the conversion says which option to pass.
 
 ---
 
-## 💡 Real-World Conversion Examples
+## Where Antigravity reads converted files
 
-### Example 1: Converting an Official Slash Command Plugin
-Migrate Anthropic's official `commit-commands` plugin into your local project's skills:
+| Resource | Workspace | All workspaces |
+| :--- | :--- | :--- |
+| Plugins | `.agents/plugins/<name>/` | `~/.gemini/config/plugins/<name>/` (CLI: `~/.gemini/antigravity-cli/plugins/<name>/`) |
+| Skills | `.agents/skills/<name>/SKILL.md` | `~/.gemini/config/skills/<name>/SKILL.md` |
+| Subagents | `.agents/agents/<name>.md` | `~/.gemini/config/agents/<name>.md` |
+| Rules | `AGENTS.md`, `GEMINI.md` or `.agents/rules/*.md` | `~/.gemini/AGENTS.md`, `~/.gemini/GEMINI.md` or `~/.gemini/config/rules/*.md` |
+| MCP servers | `.agents/mcp_config.json` | `~/.gemini/config/mcp_config.json` |
+| Hooks | `.agents/hooks.json` | `~/.gemini/config/hooks.json` |
 
-```bash
-python cc2agy.py convert path/to/commit-commands --dest .agents/skills/ --overwrite
-```
-**Result:**
-- Generates `.agents/skills/clean-gone/SKILL.md`
-- Generates `.agents/skills/commit-push-pr/SKILL.md`
-- Generates `.agents/skills/commit/SKILL.md`
-- Immediately available in Antigravity via `/clean-gone`, `/commit-push-pr`, and `/commit`.
-
-### Example 2: Converting an MCP Tool Plugin
-Migrate Microsoft's `playwright` MCP plugin configuration:
-
-```bash
-python cc2agy.py convert path/to/playwright --dest .agents/ --mcp-only
-```
-**Result:**
-- Generates `.agents/mcp_config.json` with normalized `playwright` stdio server entry.
-
-### Example 3: Converting Project Rules (`CLAUDE.md` ➔ `AGENTS.md`)
-Convert a repository's Claude instructions into Antigravity governance:
-
-```bash
-python cc2agy.py convert path/to/CLAUDE.md --dest ./ --rules-only
-```
-**Result:**
-- Generates `AGENTS.md` with clean Markdown rules, stripped YAML frontmatter, and context tracking.
-
-### Example 4: Full Complex Plugin Migration with Scripts (`adv-cowork`)
-Convert an advanced, multi-component plugin containing skills, hooks, and Python scripts:
-
-```bash
-python cc2agy.py convert path/to/adv-cowork --dest .agents/ --overwrite
-```
-**Result:**
-- Generates `.agents/plugins/adv-cowork/plugin.json` (canonical manifest)
-- Generates `.agents/plugins/adv-cowork/hooks.json` (with `SessionStart` mapped to `PreInvocation` and flat `Stop` handlers)
-- Migrates 9 modular skills to `.agents/plugins/adv-cowork/skills/<name>/SKILL.md`
-- Preserves auxiliary directories: `scripts/`, `templates/`, `espec/`, `agents/`
-- Sanitizes `${CLAUDE_PLUGIN_ROOT}` across skills and hooks to relative paths
+Sources: Antigravity documentation on [plugins](https://antigravity.google/docs/plugins), [skills](https://antigravity.google/docs/skills), [subagents](https://antigravity.google/docs/subagents), [rules](https://antigravity.google/docs/rules), [MCP](https://antigravity.google/docs/mcp) and [hooks](https://antigravity.google/docs/hooks). On Windows, `~` is `C:\Users\<user>`.
 
 ---
 
-## 📂 Antigravity Destination Guide
+## Upgrading from earlier versions
 
-Where should you place converted assets in Google Antigravity?
+Converting again with a newer cc2agy can change results. Skills, subagents and files from the previous conversion stay in the destination until you delete them.
 
-| Scope | Resource Type | Target Path in Antigravity | Description |
-| :--- | :--- | :--- | :--- |
-| **Workspace Scope**<br>*(Active Project Only)* | **Plugins** | `<workspace>/.agents/plugins/<name>/` | Full modular plugin packages. |
-| | **Skills** | `<workspace>/.agents/skills/<name>/SKILL.md` | Available only in the current workspace. |
-| | **Rules** | `<workspace>/AGENTS.md` | Active governance for the current workspace. |
-| | **MCP** | `<workspace>/.agents/mcp_config.json` | Project-specific MCP servers. |
-| **Global Scope**<br>*(All Workspaces)* | **Plugins** | `~/.gemini/config/plugins/<name>/` | Global plugins loaded in every workspace. |
-| | **Skills** | `~/.gemini/config/skills/<name>/SKILL.md` | Available across all workspaces and conversations. |
-| | **MCP** | `~/.gemini/config/mcp_config.json` | Global MCP servers active everywhere. |
-
-> **Note on Windows:** `~` resolves to `C:\Users\<username>`.
+- Commands in subfolders are named after the folder: `commands/git/commit.md` became `git-commit` (it was `commit`).
+- The `name:` field of a command is ignored, as in Claude Code; the name comes from the file path.
+- Argument numbers start at zero, as in Claude Code: `$1` is now the **second** argument.
+- Hooks run in the project folder (they used to run in the plugin folder).
+- The generated `plugin.json` keeps only `name` and `description`.
+- An unreadable `plugin.json` stops the conversion with an error (it used to be ignored silently).
+- Source files saved with a UTF-8 BOM (as Windows PowerShell 5.1 does) are read normally.
 
 ---
 
-## 🧪 Automated Test Suite
+## Limitations
 
-`cc2agy` includes 41 automated unit tests covering command parsing, modular skills synchronization, full plugin packaging, lifecycle hooks conversion, path variable sanitization, YAML multiline scalar handling, Unicode sanitization, currency symbol shielding, rule cleaning, MCP schema normalization, and CLI workflows.
+- **Python is required for hooks.** The hook runner is called as `python` on Windows and `python3` elsewhere, found through the `PATH`.
+- **Paths are absolute.** `${CLAUDE_PLUGIN_ROOT}`, `cc2agy_data/` and the runner path point to the folder chosen at conversion time; moving the converted folder breaks them. Convert straight into the final location (`--install`).
+- **Subagent detection is undocumented.** Skipping `SessionStart` and `Stop` inside subagents relies on an internal Antigravity file; if a future version changes it, those hooks will also run inside subagents.
+- **Values are written in plain text.** `userConfig` values are written into the converted files; `sensitive` values are kept out of skills and subagents but written into `mcp_config.json` and `hooks.json` (base64, not encryption), with a warning.
+- **Not converted:** `${VAR}` expansion of arbitrary environment variables in MCP configs, `${CLAUDE_PROJECT_DIR}` in MCP configs, `SessionStart` sources other than `startup`, the result of a tool in `PostToolUse` input (Antigravity sends only the error), and argument placeholders inside modular skills (`SKILL.md`).
+- **`CLAUDE.md` at a plugin root** becomes an active rule, although Claude Code does not load it.
+- **Tested with the Antigravity CLI** (`agy` 1.2.13 and 1.3.0, Windows), not with the IDE or `--install user`.
 
-Run the test suite using Python's native `unittest` runner:
+---
+
+## Tests
 
 ```bash
-python -m unittest discover tests -v
+python -m unittest discover -s tests -t . -v
 ```
 
-All 41 tests run in under 0.3 seconds with zero external test runners required.
+Run it from the repository root. The suite uses only `unittest` and runs in a few seconds.
 
 ---
 
-## 📁 Repository Structure
+## Repository structure
 
 ```text
 cc2agy/
-├── src/
-│   └── cc2agy/
-│       ├── __init__.py           # Package version (0.2.0)
-│       ├── __main__.py           # Module execution entrypoint
-│       ├── cli.py                # Command-line interface & argument parsing
-│       ├── detector.py           # Auto-detection of Claude Code assets
-│       └── converters/
-│           ├── __init__.py       # Package exports
-│           ├── commands.py       # Commands -> Skills converter
-│           ├── hooks.py          # Lifecycle Hooks converter & sanitization
-│           ├── mcp.py            # .mcp.json -> mcp_config.json converter
-│           ├── plugin.py         # Full Plugin packager & migrator
-│           ├── rules.py          # CLAUDE.md -> AGENTS.md converter
-│           └── skills.py         # Modular Skills migrator & sync
-├── tests/
-│   ├── __init__.py               # Test path initialization & sys.path isolation
-│   ├── test_commands.py          # Command converter & detector tests
-│   ├── test_hooks.py             # Lifecycle hooks conversion tests
-│   ├── test_plugin.py            # Full plugin packager tests
-│   ├── test_rules_mcp.py         # Rules, MCP & CLI integration tests
-│   └── test_skills.py            # Modular skills migrator tests
-├── .agents/
-│   └── rules/
-│       └── AGENTS.md             # Canonical workspace governance rules
-├── cc2agy.py                     # Standalone CLI runner (zero-config)
-├── pyproject.toml                # Standard PEP 621 packaging metadata
-├── LICENSE                       # MIT License
-└── README.md                     # Documentation (EN & PT-BR)
+├── src/cc2agy/
+│   ├── cli.py              # Command-line interface
+│   ├── detector.py         # Finds Claude Code components in a folder or file
+│   └── converters/
+│       ├── agents.py       # Subagents
+│       ├── commands.py     # Commands -> Skills
+│       ├── hooks.py        # Hooks and the generated hook runner
+│       ├── mcp.py          # MCP servers
+│       ├── plugin.py       # Whole plugins
+│       ├── rules.py        # CLAUDE.md -> AGENTS.md
+│       ├── skills.py       # Modular skills
+│       └── variables.py    # Plugin variables and userConfig
+├── tests/                  # unittest suite (one file per converter, plus install, BOM and settings hooks)
+├── cc2agy.py               # Runner that works without installation
+├── pyproject.toml
+├── LICENSE
+└── README.md
 ```
 
 ---
 
-## 🇧🇷 Guia Operacional em Português
+## Guia em português
 
-O **cc2agy** é uma ferramenta de ponte e migração em **Python puro** projetada para permitir que usuários do **Google Antigravity** aproveitem plugins, comandos de barra (`/comando`), regras de contexto e ferramentas MCP do ecossistema Claude Code sem atrito.
+O **cc2agy** converte comandos, skills, subagentes, regras (`CLAUDE.md`), servidores MCP, hooks e plugins inteiros do Claude Code para os formatos do Google Antigravity. É escrito em Python puro, sem dependências externas. Não sobrescreve nada sem `--overwrite` e avisa, a cada conversão, tudo o que não pôde ser convertido exatamente.
 
-### Por que o cc2agy foi criado?
-Muitos profissionais (incluindo advogados e usuários não técnicos) utilizam rotinas avançadas no Claude Code e desejam migrar para o Google Antigravity. As soluções antigas tentavam converter comandos para "workflows", um formato que o Antigravity descontinuou. O **cc2agy** converte comandos diretamente para **Skills Nativas** (`SKILL.md`), garantindo acionamento instantâneo via barra (`/`) e conformidade total com as diretrizes oficiais da Google.
+Os comandos viram **skills** (`SKILL.md`), e não workflows, porque a documentação do Antigravity informa que os workflows serão desativados em 1º de novembro de 2026 ([guia de migração](https://antigravity.google/docs/migration/workflows-to-skills/)).
 
-### Como Usar em 3 Passos Simples
+### Como usar
 
-#### Passo 1: Inspecionar o plugin ou pasta
-Verifique o que o plugin contém antes de converter:
-```bash
-python cc2agy.py inspect "caminho/para/pasta-do-plugin"
-```
+1. Veja o que a pasta ou o plugin contém:
 
-#### Passo 2: Converter um plugin completo (com scripts e hooks)
-Gere a estrutura canônica de plugin (`plugins/<nome>/`) preservando scripts e ganchos de ciclo de vida:
-```bash
-python cc2agy.py convert "caminho/para/pasta-do-plugin" --dest .agents/ --overwrite
-```
+   ```bash
+   python cc2agy.py inspect "caminho/para/o-plugin"
+   ```
 
-#### Passo 3: Ou extrair apenas comandos e skills soltas
-Se quiser extrair somente as skills para a pasta de skills do projeto ou global:
-```bash
-python cc2agy.py convert "caminho/para/pasta-do-plugin" --dest .agents/skills/ --skills-only --overwrite
-```
+2. Abra o terminal na pasta do projeto do Antigravity e converta direto para lá:
 
-### Principais Opções de Conversão
-- `--dest <caminho>`: Define onde os arquivos convertidos serão salvos.
-- `--overwrite`: Permite atualizar com segurança arquivos que já existam.
-- `--plugin`: Força o empacotamento no formato completo de Plugin do Antigravity (`plugins/<nome>/`).
-- `--skills-only`: Converte apenas comandos/skills.
-- `--rules-only`: Converte apenas o arquivo de instruções `CLAUDE.md` em `AGENTS.md`.
-- `--mcp-only`: Converte apenas as configurações de servidores MCP.
-- `--hooks-only`: Converte apenas os ganchos de ciclo de vida para `hooks.json`.
+   ```bash
+   python cc2agy.py convert "caminho/para/o-plugin" --install project
+   ```
+
+   Para valer em todos os projetos, use `--install user`, que grava em `~/.gemini/config/`. Para só gerar os arquivos numa pasta, use `--dest <pasta>`.
+
+3. Se o plugin pedir valores de configuração (`userConfig`), informe-os na conversão, porque o Antigravity não tem como pedi-los:
+
+   ```bash
+   python cc2agy.py convert "caminho/para/o-plugin" --install project --user-config pasta_notas=D:/Notas
+   ```
+
+### Opções principais
+
+- `--dest <pasta>`: pasta de destino. Um plugin vai para `<pasta>/plugins/<nome>/`.
+- `--install project|user`: converte direto para as pastas que o Antigravity lê. Um `mcp_config.json` ou `hooks.json` já existente é complementado, não substituído, e a versão anterior fica guardada em `<arquivo>.cc2agy.bak`.
+- `--overwrite`: substitui o que já existe no destino.
+- `--plugin`: trata a pasta como plugin mesmo sem `.claude-plugin/plugin.json`.
+- `--user-config CHAVE=VALOR`: valor de configuração do plugin (pode repetir).
+- `--skills-only`, `--rules-only`, `--mcp-only`, `--hooks-only`: convertem só uma parte. Os subagentes só são convertidos sem esses filtros.
+
+### O que muda para quem já converteu antes
+
+Ao converter de novo com a versão atual, o que veio da conversão anterior continua no destino até ser apagado à mão.
+
+- Comandos em subpasta levam o nome da pasta: `commands/git/commit.md` virou `git-commit` (antes era `commit`).
+- O campo `name:` de um comando é ignorado, como no Claude Code.
+- A numeração dos argumentos começa em zero, como no Claude Code: `$1` agora é o **segundo** argumento.
+- Os hooks rodam na pasta do projeto (antes rodavam na pasta do plugin).
+- O `plugin.json` gerado só tem `name` e `description`.
+- Um `plugin.json` ilegível interrompe a conversão com erro (antes era ignorado sem aviso).
+- Arquivos gravados com BOM, como faz o PowerShell 5.1 do Windows, passaram a ser lidos normalmente.
+
+### Limitações
+
+- Os hooks exigem Python no `PATH` (`python` no Windows, `python3` nos demais sistemas).
+- Os caminhos gerados são absolutos: se a pasta convertida for movida, é preciso converter de novo. Converta direto no destino final, com `--install`.
+- Valores de `userConfig` ficam gravados nos arquivos convertidos; os marcados como `sensitive` ficam fora de skills e subagentes, mas entram no `mcp_config.json` e no `hooks.json`, com aviso.
+- O teste real foi feito na CLI do Antigravity (`agy` 1.2.13 e 1.3.0, no Windows), não na IDE nem com `--install user`.
+- A lista completa está na seção [Limitations](#limitations).
 
 ---
 
-## 📄 License
+## License
 
-This project is licensed under the [MIT License](LICENSE).
-Distributed under the open-source MIT terms. Copyright (c) 2026 cc2agy Contributors.
+[MIT](LICENSE). Copyright (c) 2026 cc2agy Contributors.
