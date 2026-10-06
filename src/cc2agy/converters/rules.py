@@ -66,7 +66,8 @@ def convert_rules_file(
     if not source_file.exists() or not source_file.is_file():
         raise FileNotFoundError(f"Source rules file not found: {source_file}")
 
-    raw_content = source_file.read_text(encoding="utf-8")
+    # utf-8-sig also reads files saved with a BOM (Windows PowerShell 5.1)
+    raw_content = source_file.read_text(encoding="utf-8-sig")
     cleaned_content, had_frontmatter = clean_rules_content(raw_content)
 
     warnings: list[str] = []

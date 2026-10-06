@@ -107,12 +107,17 @@ def migrate_skill_folder(
                 f.rename(target_skill_file)
                 break
 
-    # Normalize frontmatter name to match directory, rewriting only the 'name' line
+    # Normalize frontmatter name to match directory, rewriting only the 'name' line, and drop
+    # a BOM (Windows PowerShell 5.1), which would hide the frontmatter from a strict reader
     if target_skill_file.exists():
         # newline="" keeps the original line endings untouched on read and write
         with open(target_skill_file, "r", encoding="utf-8", errors="replace", newline="") as f:
             content = f.read()
+        had_bom = content.startswith("﻿")
+        content = content.removeprefix("﻿")
         new_content = _set_frontmatter_name(content, skill_name)
+        if new_content is None and had_bom:
+            new_content = content
         if new_content is not None:
             with open(target_skill_file, "w", encoding="utf-8", newline="") as f:
                 f.write(new_content)

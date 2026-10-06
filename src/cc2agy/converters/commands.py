@@ -239,7 +239,7 @@ def command_skill_name(
     """
     name = _resolve_skill_name(default_name or source_file.stem)
     if warnings is not None:
-        meta, _ = parse_frontmatter(source_file.read_text(encoding="utf-8"))
+        meta, _ = parse_frontmatter(source_file.read_text(encoding="utf-8-sig"))
         declared = meta.get("name")
         if declared and sanitize_skill_name(declared) != name:
             warnings.append(
@@ -288,7 +288,8 @@ def convert_command_file(
 ) -> Path:
     """Convert a single Claude Code command file into an Antigravity Skill folder."""
     return convert_command_text(
-        source_file.read_text(encoding="utf-8"),
+        # utf-8-sig also reads files saved with a BOM (Windows PowerShell 5.1)
+        source_file.read_text(encoding="utf-8-sig"),
         dest_skills_dir,
         default_name=default_name or source_file.stem,
         custom_name=custom_name,

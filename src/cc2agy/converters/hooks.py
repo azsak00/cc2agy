@@ -626,10 +626,9 @@ def is_settings_file(path: Path) -> bool:
 
 
 def _read_hooks_source(path: Path) -> Any:
-    # Settings files are often saved by Windows PowerShell 5.1, which writes a UTF-8 BOM
-    encoding = "utf-8-sig" if is_settings_file(path) else "utf-8"
+    # utf-8-sig also reads files saved with a BOM (Windows PowerShell 5.1)
     try:
-        with open(path, "r", encoding=encoding) as f:
+        with open(path, "r", encoding="utf-8-sig") as f:
             return json.load(f)
     except Exception as e:
         raise ValueError(f"Failed to read/parse hooks JSON from {path}: {e}")
@@ -746,7 +745,7 @@ def convert_hooks_file(
         raise FileExistsError(f"Destination hooks file already exists: {dest_file}")
 
     try:
-        with open(source_path, "r", encoding="utf-8") as f:
+        with open(source_path, "r", encoding="utf-8-sig") as f:
             raw_data = json.load(f)
     except Exception as e:
         raise ValueError(f"Failed to read/parse hooks JSON from {source_path}: {e}")

@@ -160,7 +160,8 @@ def _warn_unsupported_components(source_dir: Path, manifest_data: Dict[str, Any]
 def _read_json(path: Path) -> Any:
     """Load a JSON file, raising ValueError that names the file on any read/parse failure."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        # utf-8-sig also reads files saved with a BOM (Windows PowerShell 5.1)
+        with open(path, "r", encoding="utf-8-sig") as f:
             return json.load(f)
     except (OSError, ValueError) as e:
         raise ValueError(f"Failed to read/parse JSON from {path}: {e}") from e
@@ -291,11 +292,11 @@ def convert_plugin(
     manifest_file = find_plugin_manifest(source_dir)
     manifest_data: Dict[str, Any] = {}
     if manifest_file:
-        try:
-            with open(manifest_file, "r", encoding="utf-8") as f:
-                manifest_data = json.load(f)
-        except Exception:
-            manifest_data = {}
+        # An unreadable manifest stops the conversion: its name, components and userConfig
+        # would otherwise be lost without notice
+        manifest_data = _read_json(manifest_file)
+        if not isinstance(manifest_data, dict):
+            raise ValueError(f"Plugin manifest {manifest_file} does not hold a JSON object")
 
     raw_name = manifest_data.get("name") or source_dir.name
     plugin_name = sanitize_skill_name(raw_name)
@@ -409,7 +410,7 @@ def convert_plugin(
     for skill_file in skills_dest.rglob("*.md"):
         if skill_file.is_file() and skill_file.name.lower() == "skill.md":
             try:
-                content = skill_file.read_text(encoding="utf-8", errors="ignore")
+                content = skill_file.read_text(encoding="utf-8-sig", errors="ignore")
                 if any(marker in content for marker in VARIABLE_MARKERS):
                     updated = sanitize_skill_content(content, variables=variables, warnings=warnings)
                     skill_file.write_text(updated, encoding="utf-8")

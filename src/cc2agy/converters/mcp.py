@@ -202,7 +202,8 @@ def convert_mcp_file(
     if not source_file.exists() or not source_file.is_file():
         raise FileNotFoundError(f"Source MCP file not found: {source_file}")
 
-    content = source_file.read_text(encoding="utf-8")
+    # utf-8-sig also reads files saved with a BOM (Windows PowerShell 5.1)
+    content = source_file.read_text(encoding="utf-8-sig")
     try:
         raw_data = json.loads(content)
     except json.JSONDecodeError as e:

@@ -275,7 +275,8 @@ def convert_agent_file(
 ) -> Optional[Path]:
     """Convert one agent file (see convert_agent_text)."""
     return convert_agent_text(
-        source_file.read_text(encoding="utf-8"),
+        # utf-8-sig also reads files saved with a BOM (Windows PowerShell 5.1)
+        source_file.read_text(encoding="utf-8-sig"),
         str(source_file),
         dest_agents_dir,
         claimed,
