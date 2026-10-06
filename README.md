@@ -29,7 +29,7 @@ cc2agy is written in pure Python (standard library only). It never overwrites a 
 | :--- | :--- | :--- |
 | **Plugin** (folder with `.claude-plugin/plugin.json`) | `plugins/<name>/` | Converts every component below into the plugin folder and copies every other folder and root file of the plugin (`scripts/`, `server/`, `bin/`, `node_modules/`, `LICENSE`, ...). The generated `plugin.json` keeps only `name` and `description`, the fields Antigravity's schema allows. Components declared in the Claude Code `plugin.json` (`commands`, `skills`, `agents`, `hooks`, `mcpServers`) are honored. |
 | **Commands** (`commands/*.md`, `.claude/commands/*.md`, `prompts/*.md`) | `skills/<name>/SKILL.md` | The skill name comes from the file path, as in Claude Code: `commands/git/commit.md` (`/git:commit`) becomes `git-commit`. `description`, `when_to_use` and `argument-hint` go into the skill description. Argument placeholders follow Claude Code: `$ARGUMENTS`, `$ARGUMENTS[N]`, `$N` (zero-based: `$0` is the first argument) and named arguments from `arguments`; `\$1`, code blocks and amounts such as `$50` are left alone. |
-| **Skills** (`skills/<name>/SKILL.md`) | `skills/<name>/SKILL.md` | Copies the whole skill folder (`references/`, `scripts/`, ...) and aligns `name:` with the folder name. |
+| **Skills** (`skills/<name>/SKILL.md`) | `skills/<name>/SKILL.md` | Copies the whole skill folder (`references/`, `scripts/`, ...) and aligns `name:` with the folder name. Argument placeholders in `SKILL.md` follow the same rules as commands (a skill without placeholders is left as is); `${CLAUDE_SKILL_DIR}` becomes the absolute path of the converted skill and `${CLAUDE_PROJECT_DIR}` becomes `.`; `${CLAUDE_SESSION_ID}` and `${CLAUDE_EFFORT}` have no equivalent and are reported. |
 | **Subagents** (`agents/*.md`, `.claude/agents/*.md`) | `agents/<name>.md` | Maps tool names (`Read` to `view_file`, `Bash` to `run_command`, `Edit` to `replace_file_content` and `multi_replace_file_content`, ...) and removes tools Antigravity lacks, with a warning. `haiku` becomes `flash`; `sonnet`, `opus` and `fable` become `pro` (an assumed correspondence, not documented). |
 | **Rules** (`CLAUDE.md`) | `AGENTS.md` (`rules/AGENTS.md` with `--install`) | Removes YAML frontmatter, adds a provenance comment and warns when the file exceeds Antigravity's 24 KB per-file limit ([Rules](https://antigravity.google/docs/rules)). |
 | **MCP servers** (`.mcp.json`, `mcp.json`, `.claude.json`) | `mcp_config.json` | Writes the `mcpServers` root; remote servers get `serverUrl` and keep their `headers`. Warns about plaintext credentials and about `headersHelper` and `oauth`, which are not converted. |
@@ -208,6 +208,7 @@ Converting again with a newer cc2agy can change results. Skills, subagents and f
 - The generated `plugin.json` keeps only `name` and `description`.
 - An unreadable `plugin.json` stops the conversion with an error (it used to be ignored silently).
 - Source files saved with a UTF-8 BOM (as Windows PowerShell 5.1 does) are read normally.
+- Argument placeholders and `${CLAUDE_SKILL_DIR}` inside modular skills (`SKILL.md`) are converted (they used to be copied as they were).
 
 ---
 
@@ -217,7 +218,7 @@ Converting again with a newer cc2agy can change results. Skills, subagents and f
 - **Paths are absolute.** `${CLAUDE_PLUGIN_ROOT}`, `cc2agy_data/` and the runner path point to the folder chosen at conversion time; moving the converted folder breaks them. Convert straight into the final location (`--install`).
 - **Subagent detection is undocumented.** Skipping `SessionStart` and `Stop` inside subagents relies on an internal Antigravity file; if a future version changes it, those hooks will also run inside subagents.
 - **Values are written in plain text.** `userConfig` values are written into the converted files; `sensitive` values are kept out of skills and subagents but written into `mcp_config.json` and `hooks.json` (base64, not encryption), with a warning.
-- **Not converted:** `${VAR}` expansion of arbitrary environment variables in MCP configs, `${CLAUDE_PROJECT_DIR}` in MCP configs, `SessionStart` sources other than `startup`, the result of a tool in `PostToolUse` input (Antigravity sends only the error), and argument placeholders inside modular skills (`SKILL.md`).
+- **Not converted:** `${VAR}` expansion of arbitrary environment variables in MCP configs, `${CLAUDE_PROJECT_DIR}` in MCP configs, `SessionStart` sources other than `startup`, frontmatter fields of modular skills other than `name` (copied as they are), and the result of a tool in `PostToolUse` input (Antigravity sends only the error).
 - **`CLAUDE.md` at a plugin root** becomes an active rule, although Claude Code does not load it.
 - **Tested with the Antigravity CLI** (`agy` 1.2.13 and 1.3.0, Windows), not with the IDE or `--install user`.
 
@@ -306,6 +307,7 @@ Ao converter de novo com a versão atual, o que veio da conversão anterior cont
 - O `plugin.json` gerado só tem `name` e `description`.
 - Um `plugin.json` ilegível interrompe a conversão com erro (antes era ignorado sem aviso).
 - Arquivos gravados com BOM, como faz o PowerShell 5.1 do Windows, passaram a ser lidos normalmente.
+- Nas skills modulares (`SKILL.md`), os marcadores de argumento e `${CLAUDE_SKILL_DIR}` passaram a ser convertidos (antes eram copiados como estavam).
 
 ### Limitações
 

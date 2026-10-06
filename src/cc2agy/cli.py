@@ -317,8 +317,11 @@ def handle_convert(
                 skills_dest = dest if dest.name == "skills" else dest / "skills"
                 skills_dest.mkdir(parents=True, exist_ok=True)
                 try:
-                    res = migrate_skill_folder(target.parent, skills_dest, overwrite=overwrite)
+                    skill_warnings: list[str] = []
+                    res = migrate_skill_folder(target.parent, skills_dest, overwrite=overwrite, warnings=skill_warnings)
                     print(f"  [+] Skill migrated: {res.parent.name} -> {res}")
+                    for w in skill_warnings:
+                        print(f"      [!] Warning: {w}")
                     converted_skills += 1
                 except FileExistsError as e:
                     print(f"  [!] Skipped existing skill (use --overwrite to replace): {e}", file=sys.stderr)
@@ -353,12 +356,15 @@ def handle_convert(
             skills_dest = dest if dest.name == "skills" else dest / "skills"
             skills_dest.mkdir(parents=True, exist_ok=True)
             skill_failures: list[tuple[Path, Exception]] = []
+            skill_warnings = []
             results = migrate_skills_directory(
-                info.skills_dir, skills_dest, overwrite=overwrite, failures=skill_failures
+                info.skills_dir, skills_dest, overwrite=overwrite, failures=skill_failures, warnings=skill_warnings
             )
             for res in results:
                 print(f"  [+] Skill migrated: {res.parent.name} -> {res}")
                 converted_skills += 1
+            for w in skill_warnings:
+                print(f"      [!] Warning: {w}")
             for src, exc in skill_failures:
                 report_failure("skill", src, exc)
 

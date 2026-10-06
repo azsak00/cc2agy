@@ -15,7 +15,14 @@ import stat
 from pathlib import Path
 from typing import List, Optional, Tuple
 
-from .commands import sanitize_skill_name
+from .commands import adapt_prompt_arguments, frontmatter_list, parse_frontmatter, sanitize_skill_name
+from .variables import PROJECT_DIR_RE
+
+
+# Variables Claude Code substitutes in a skill's markdown content (besides the plugin ones,
+# handled with the plugin): the skill folder, and two with no Antigravity equivalent
+_SKILL_DIR_RE = re.compile(r"\$\{?CLAUDE_SKILL_DIR\}?")
+_NO_EQUIVALENT_RE = re.compile(r"\$\{?(CLAUDE_SESSION_ID|CLAUDE_EFFORT)\}?")
 
 
 def _remove_readonly(func, path, excinfo):
@@ -58,16 +65,40 @@ def _set_frontmatter_name(content: str, skill_name: str) -> Optional[str]:
     return opening + new_block + closing + content[fm_match.end():]
 
 
+def _adapt_skill_body(content: str, skill_dir: Path, skill_name: str, warnings: List[str]) -> str:
+    """Adapt the skill body (the frontmatter is kept verbatim) as Claude Code would expand it:
+    argument placeholders (see adapt_prompt_arguments), ${CLAUDE_SKILL_DIR} (the converted
+    skill folder, forward slashes) and ${CLAUDE_PROJECT_DIR} ('.', where Antigravity runs
+    the agent's commands)."""
+    fm_match = _FRONTMATTER_RE.match(content)
+    head = fm_match.group(0) if fm_match else ""
+    body = content[len(head):]
+    meta, _ = parse_frontmatter(content)
+    adapted = adapt_prompt_arguments(body, frontmatter_list(meta.get("arguments")), origin="skill")
+    if "\r\n" in body:
+        # The added note uses \n; keep the file's line endings
+        adapted = re.sub(r"(?<!\r)\n", "\r\n", adapted)
+    adapted = _SKILL_DIR_RE.sub(lambda _: skill_dir.as_posix(), adapted)
+    adapted = PROJECT_DIR_RE.sub(".", adapted)
+    for variable in sorted(set(_NO_EQUIVALENT_RE.findall(adapted))):
+        warnings.append(f"Skill '{skill_name}': ${{{variable}}} has no Antigravity equivalent; left unchanged.")
+    return head + adapted
+
+
 def migrate_skill_folder(
     source_skill_dir: Path,
     dest_skills_dir: Path,
-    overwrite: bool = False
+    overwrite: bool = False,
+    warnings: Optional[List[str]] = None,
 ) -> Path:
     """Migrate an existing modular skill folder into the destination skills directory.
 
     Preserves all auxiliary subdirectories (references/, scripts/, assets/, etc.).
-    Ensures canonical kebab-case naming and YAML frontmatter compliance.
+    Ensures canonical kebab-case naming and YAML frontmatter compliance, and adapts the
+    SKILL.md body (see _adapt_skill_body); messages go to `warnings` when given.
     """
+    if warnings is None:
+        warnings = []
     if not source_skill_dir.exists() or not source_skill_dir.is_dir():
         raise FileNotFoundError(f"Source skill folder not found: {source_skill_dir}")
 
@@ -113,12 +144,11 @@ def migrate_skill_folder(
         # newline="" keeps the original line endings untouched on read and write
         with open(target_skill_file, "r", encoding="utf-8", errors="replace", newline="") as f:
             content = f.read()
-        had_bom = content.startswith("﻿")
+        original = content
         content = content.removeprefix("﻿")
-        new_content = _set_frontmatter_name(content, skill_name)
-        if new_content is None and had_bom:
-            new_content = content
-        if new_content is not None:
+        named = _set_frontmatter_name(content, skill_name) or content
+        new_content = _adapt_skill_body(named, target_skill_dir.resolve(), skill_name, warnings)
+        if new_content != original:
             with open(target_skill_file, "w", encoding="utf-8", newline="") as f:
                 f.write(new_content)
 
@@ -130,6 +160,7 @@ def migrate_skills_directory(
     dest_skills_dir: Path,
     overwrite: bool = False,
     failures: Optional[List[Tuple[Path, Exception]]] = None,
+    warnings: Optional[List[str]] = None,
 ) -> List[Path]:
     """Scan and migrate all modular skills from a source directory.
 
@@ -159,7 +190,7 @@ def migrate_skills_directory(
 
     for item in candidates:
         try:
-            res = migrate_skill_folder(item, dest_skills_dir, overwrite=overwrite)
+            res = migrate_skill_folder(item, dest_skills_dir, overwrite=overwrite, warnings=warnings)
             migrated.append(res)
         except FileExistsError:
             continue

@@ -138,14 +138,16 @@ def extract_description(body: str, metadata: Dict[str, str], command_name: str) 
     return f"Executes the /{command_name} command migrated from Claude Code."
 
 
-def adapt_prompt_arguments(body: str, named: Optional[List[str]] = None) -> str:
+def adapt_prompt_arguments(body: str, named: Optional[List[str]] = None, origin: str = "command") -> str:
     """Adapt Claude Code argument placeholders for Antigravity instructions.
 
     Placeholders, as Claude Code documents them: $ARGUMENTS (all arguments), $ARGUMENTS[N]
     and its shorthand $N (0-based: $0 is the first argument), and $name for the names
     declared in the `arguments` frontmatter (in order). A backslash before a placeholder
     (\\$1) keeps it literal, without the backslash. Without any placeholder, Claude Code
-    appends the typed arguments as "ARGUMENTS: <value>"; a closing note asks for the same.
+    appends the typed arguments as "ARGUMENTS: <value>"; for a command (origin "command")
+    a closing note asks for the same, while a skill (origin "skill") is left unchanged,
+    since the model usually invokes skills on its own.
 
     Isolates markdown code blocks (fenced ``` and inline `) to avoid corrupting bash scripts
     or code examples, and applies strict word boundaries to avoid replacing monetary values ($50).
@@ -185,13 +187,16 @@ def adapt_prompt_arguments(body: str, named: Optional[List[str]] = None) -> str:
             protected,
         )
 
+    source = "skill" if origin == "skill" else "slash command"
     if count:
         protected = (
             "> [!NOTE]\n"
-            "> This skill was migrated from a Claude Code slash command. "
+            f"> This skill was migrated from a Claude Code {source}. "
             "Any user parameters passed after the slash command should be applied to the placeholders below.\n\n"
             + protected
         )
+    elif origin == "skill":
+        pass
     else:
         protected += (
             "\n\n> [!NOTE]\n"

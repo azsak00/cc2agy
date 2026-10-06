@@ -383,7 +383,7 @@ def convert_plugin(
 
     modular_skill_names: Set[str] = set()
     for s_dir in skill_dirs:
-        sk_results = migrate_skills_directory(s_dir, skills_dest, overwrite=overwrite)
+        sk_results = migrate_skills_directory(s_dir, skills_dest, overwrite=overwrite, warnings=warnings)
         summary["skills_migrated"] += len(sk_results)
         modular_skill_names.update(r.parent.name if r.is_file() else r.name for r in sk_results)
 
