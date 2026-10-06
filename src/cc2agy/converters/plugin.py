@@ -17,7 +17,7 @@ from cc2agy.converters.hooks import convert_hooks_file
 from cc2agy.converters.mcp import convert_mcp_file
 from cc2agy.converters.rules import convert_rules_file
 from cc2agy.converters.skills import migrate_skills_directory
-from cc2agy.detector import _find_case_insensitive
+from cc2agy.detector import CLAUDE_PLUGIN_DIR, _find_case_insensitive
 
 
 AUXILIARY_DIRS = {
@@ -50,17 +50,8 @@ def sanitize_skill_content(content: str) -> str:
 
 
 def find_plugin_manifest(source_dir: Path) -> Optional[Path]:
-    """Locate plugin manifest (.claude-plugin/plugin.json, plugin.json, etc.)."""
-    candidate_locations = [
-        source_dir / ".claude-plugin" / "plugin.json",
-        source_dir / "plugin.json",
-        source_dir / ".claude" / "plugin.json",
-        source_dir / "manifest.json",
-    ]
-    for cand in candidate_locations:
-        if cand.exists() and cand.is_file():
-            return cand
-    return None
+    """Locate the Claude Code plugin manifest (.claude-plugin/plugin.json only)."""
+    return _find_case_insensitive(source_dir / CLAUDE_PLUGIN_DIR, "plugin.json")
 
 
 def convert_plugin(

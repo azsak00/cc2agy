@@ -7,6 +7,14 @@ from pathlib import Path
 from typing import List, Optional, Set
 
 
+CLAUDE_PLUGIN_DIR = ".claude-plugin"
+
+
+def _is_claude_plugin_manifest(path: Path) -> bool:
+    """True for the canonical Claude Code manifest location: .claude-plugin/plugin.json."""
+    return path.name.lower() == "plugin.json" and path.parent.name.lower() == CLAUDE_PLUGIN_DIR
+
+
 def _find_case_insensitive(directory: Path, filename: str) -> Optional[Path]:
     """Locate a file within a directory in a case-insensitive manner (cross-platform / Linux safe)."""
     if not directory.exists() or not directory.is_dir():
@@ -139,11 +147,14 @@ def detect_claude_project(target_path: Path) -> ClaudeProjectInfo:
     if not target_path.exists():
         return info
 
-    # If target is directly a single command, rules, MCP config, or hooks file
+    # If target is directly a single command, skill, rules, MCP config, or hooks file
     if target_path.is_file():
         if target_path.suffix.lower() == ".md":
             if target_path.name.lower() == "claude.md":
                 info.rules_file = target_path
+            elif target_path.name.lower() == "skill.md":
+                # A SKILL.md stands for its whole folder (references/, scripts/, ...)
+                info.skills_dir = target_path.parent
             else:
                 info.command_files.append(target_path)
                 info.commands_dirs.append(target_path.parent)
@@ -155,7 +166,7 @@ def detect_claude_project(target_path: Path) -> ClaudeProjectInfo:
             elif "hook" in target_path.name.lower():
                 info.hooks_file = target_path
                 return info
-            elif "plugin" in target_path.name.lower() or "manifest" in target_path.name.lower():
+            elif _is_claude_plugin_manifest(target_path):
                 info.plugin_manifest = target_path
                 return info
 
@@ -208,15 +219,10 @@ def detect_claude_project(target_path: Path) -> ClaudeProjectInfo:
         if info.mcp_file:
             break
 
-    # 5. Discover plugin manifest
-    for s_dir in [target_path, target_path / ".claude-plugin", target_path / ".claude"]:
-        for mname in ["plugin.json", "manifest.json"]:
-            found_manifest = _find_case_insensitive(s_dir, mname)
-            if found_manifest:
-                info.plugin_manifest = found_manifest
-                break
-        if info.plugin_manifest:
-            break
+    # 5. Discover plugin manifest. Claude Code only reads .claude-plugin/plugin.json;
+    # a root plugin.json or manifest.json belongs to other tools (web app manifests,
+    # already-converted Antigravity plugins) and must not trigger plugin packaging.
+    info.plugin_manifest = _find_case_insensitive(target_path / CLAUDE_PLUGIN_DIR, "plugin.json")
 
     # 6. Discover lifecycle hooks (hooks.json, etc.)
     search_dirs_hooks = [target_path / "hooks", target_path, target_path / ".claude"]

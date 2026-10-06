@@ -157,6 +157,30 @@ class TestSkillsMigrator(unittest.TestCase):
 
         self.assertEqual((skill_src / "SKILL.md").read_text(encoding="utf-8"), "---\nname: my-skill\n---\nKeep me")
 
+    def test_single_skill_md_file_migrates_whole_folder(self):
+        """Pointing the CLI at a SKILL.md migrates its folder, not a command copy of the file."""
+        skill = self.base / "reviewer"
+        (skill / "references").mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: reviewer\ndescription: Reviews briefs\n---\nSee references/guide.md\n",
+            encoding="utf-8",
+        )
+        (skill / "references" / "guide.md").write_text("Guide", encoding="utf-8")
+
+        info = detect_claude_project(skill / "SKILL.md")
+        self.assertEqual(info.command_files, [])
+        self.assertEqual(info.skills_dir, skill.resolve())
+
+        dest = self.base / "out"
+        ret = main(["convert", str(skill / "SKILL.md"), "--dest", str(dest)])
+
+        self.assertEqual(ret, 0)
+        self.assertTrue((dest / "skills" / "reviewer" / "references" / "guide.md").exists())
+        self.assertEqual(
+            (dest / "skills" / "reviewer" / "SKILL.md").read_text(encoding="utf-8"),
+            (skill / "SKILL.md").read_text(encoding="utf-8"),
+        )
+
     def test_cli_convert_modular_skills(self):
         plugin_root = self.base / "mcp-server-dev"
         plugin_root.mkdir()

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import tempfile
 import unittest
@@ -9,6 +11,7 @@ from pathlib import Path
 
 from cc2agy.cli import main
 from cc2agy.converters.plugin import convert_plugin, sanitize_skill_content
+from cc2agy.detector import detect_claude_project
 
 
 class TestPluginConverter(unittest.TestCase):
@@ -171,8 +174,8 @@ class TestPluginConverter(unittest.TestCase):
             source_plugin = tmp_path / "auto-plugin"
             dest_root = tmp_path / "cli_out"
 
-            source_plugin.mkdir(parents=True)
-            (source_plugin / "plugin.json").write_text(
+            (source_plugin / ".claude-plugin").mkdir(parents=True)
+            (source_plugin / ".claude-plugin" / "plugin.json").write_text(
                 json.dumps({"name": "auto-plugin", "version": "0.1.0"}),
                 encoding="utf-8",
             )
@@ -187,6 +190,37 @@ class TestPluginConverter(unittest.TestCase):
 
             expected_manifest = dest_root / "plugins" / "auto-plugin" / "plugin.json"
             self.assertTrue(expected_manifest.exists())
+
+    def test_root_manifests_do_not_trigger_plugin_mode(self):
+        """A web app manifest.json or a root plugin.json is not a Claude Code plugin manifest."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            site = tmp_path / "my-site"
+            (site / "docs").mkdir(parents=True)
+            (site / "scripts").mkdir()
+            (site / "manifest.json").write_text(json.dumps({"name": "My Site"}), encoding="utf-8")
+            (site / "plugin.json").write_text(json.dumps({"name": "other-tool"}), encoding="utf-8")
+
+            info = detect_claude_project(site)
+            self.assertFalse(info.is_plugin)
+            self.assertFalse(info.is_claude_project)
+
+            dest_root = tmp_path / "out"
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                exit_code = main(["convert", str(site), "--dest", str(dest_root)])
+            self.assertEqual(exit_code, 1)
+            self.assertFalse((dest_root / "plugins").exists())
+
+    def test_single_root_manifest_file_is_not_a_plugin(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manifest = Path(tmp_dir) / "manifest.json"
+            manifest.write_text(json.dumps({"name": "My Site"}), encoding="utf-8")
+            self.assertFalse(detect_claude_project(manifest).is_claude_project)
+
+            canonical = Path(tmp_dir) / ".claude-plugin" / "plugin.json"
+            canonical.parent.mkdir()
+            canonical.write_text(json.dumps({"name": "real"}), encoding="utf-8")
+            self.assertTrue(detect_claude_project(canonical).is_plugin)
 
 
 if __name__ == "__main__":
