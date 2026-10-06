@@ -16,6 +16,7 @@ Google Antigravity defines MCP configurations in `mcp_config.json`:
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -178,7 +179,8 @@ def convert_mcp_file(
     source_file: Path,
     dest_dir: Path,
     custom_filename: str = "mcp_config.json",
-    overwrite: bool = False
+    overwrite: bool = False,
+    merge: bool = False,
 ) -> Tuple[Path, List[str]]:
     """Convert a Claude Code MCP JSON file into an Antigravity mcp_config.json file.
 
@@ -187,6 +189,7 @@ def convert_mcp_file(
         dest_dir: Target directory where mcp_config.json will be saved.
         custom_filename: Target filename (default: "mcp_config.json").
         overwrite: Whether to overwrite existing destination file.
+        merge: Add the converted servers to an existing destination file (see write_mcp_data).
 
     Returns:
         Tuple of (target_file_path, warnings_list).
@@ -207,8 +210,28 @@ def convert_mcp_file(
 
     return write_mcp_data(
         raw_data, dest_dir, custom_filename=custom_filename, overwrite=overwrite,
-        variables=standalone_variables(source_file, dest_dir),
+        variables=standalone_variables(source_file, dest_dir), merge=merge,
     )
+
+
+def read_json_for_merge(target_file: Path) -> Dict[str, Any]:
+    """Load an existing JSON object that converted data will be merged into.
+
+    Raises ValueError when the file is not a valid JSON object, so it is never replaced.
+    """
+    try:
+        data = json.loads(target_file.read_text(encoding="utf-8-sig"))
+    except (ValueError, UnicodeDecodeError) as e:
+        raise ValueError(f"Existing '{target_file}' is not valid JSON ({e}); left untouched.") from e
+    if not isinstance(data, dict):
+        raise ValueError(f"Existing '{target_file}' is not a JSON object; left untouched.")
+    return data
+
+
+def write_json_with_backup(target_file: Path, data: Dict[str, Any]) -> None:
+    """Save the current target_file as <name>.cc2agy.bak, then write data over it."""
+    shutil.copy2(target_file, target_file.with_name(target_file.name + ".cc2agy.bak"))
+    target_file.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def write_mcp_data(
@@ -217,12 +240,39 @@ def write_mcp_data(
     custom_filename: str = "mcp_config.json",
     overwrite: bool = False,
     variables: Optional[PluginVariables] = None,
+    merge: bool = False,
 ) -> Tuple[Path, List[str]]:
-    """Convert already-loaded Claude Code MCP data and write it as an Antigravity mcp_config.json."""
+    """Convert already-loaded Claude Code MCP data and write it as an Antigravity mcp_config.json.
+
+    With merge, an existing file is kept: converted servers are added to it, servers already
+    there are never touched, and a converted server with the same name as an existing one is
+    skipped with a warning (replaced, alone, with overwrite). The previous file is saved as
+    <name>.cc2agy.bak.
+    """
     config, warnings = convert_mcp_config(raw_data, variables)
 
     dest_dir.mkdir(parents=True, exist_ok=True)
     target_file = dest_dir / custom_filename
+
+    if merge and target_file.exists():
+        existing = read_json_for_merge(target_file)
+        servers = existing.get("mcpServers")
+        if servers is None:
+            servers = existing["mcpServers"] = {}
+        elif not isinstance(servers, dict):
+            raise ValueError(f"Existing '{target_file}' has an invalid 'mcpServers' value; left untouched.")
+        changed = False
+        for name, server in config["mcpServers"].items():
+            if name in servers and not overwrite:
+                warnings.append(
+                    f"Server '{name}' already exists in '{target_file}'; kept as is (use --overwrite to replace it)."
+                )
+                continue
+            servers[name] = server
+            changed = True
+        if changed:
+            write_json_with_backup(target_file, existing)
+        return target_file, warnings
 
     if target_file.exists() and not overwrite:
         raise FileExistsError(

@@ -8,7 +8,12 @@ from pathlib import Path
 
 from cc2agy import __version__
 from cc2agy.converters.agents import convert_agents_directory
-from cc2agy.converters.commands import command_skill_name, convert_command_file, convert_commands_directory
+from cc2agy.converters.commands import (
+    command_skill_name,
+    convert_command_file,
+    convert_commands_directory,
+    sanitize_skill_name,
+)
 from cc2agy.converters.hooks import convert_hooks_file
 from cc2agy.converters.mcp import convert_mcp_file
 from cc2agy.converters.plugin import convert_plugin
@@ -54,8 +59,16 @@ def build_parser() -> argparse.ArgumentParser:
     convert_parser.add_argument(
         "--dest", "-d",
         type=Path,
-        default=Path("./output"),
+        default=None,
         help="Destination directory for converted Antigravity assets (default: ./output)."
+    )
+    convert_parser.add_argument(
+        "--install",
+        choices=["project", "user"],
+        default=None,
+        help="Convert straight into the folders Antigravity reads: 'project' uses .agents/ in the "
+             "current folder, 'user' uses ~/.gemini/config/. Existing mcp_config.json and hooks.json "
+             "are merged, not replaced (a copy is kept as <file>.cc2agy.bak). Cannot be used with --dest."
     )
     convert_parser.add_argument(
         "--overwrite",
@@ -123,6 +136,23 @@ def _parse_user_config(entries: list[str]) -> dict[str, str]:
     return values
 
 
+def install_base(install: str) -> Path:
+    """Folder Antigravity reads converted assets from: <cwd>/.agents or ~/.gemini/config."""
+    if install == "project":
+        return Path.cwd() / ".agents"
+    return Path.home() / ".gemini" / "config"
+
+
+def _source_name(target: Path) -> str:
+    """Name the converted source (its folder, skipping .claude/ and hooks/) for its hook group."""
+    folder = target.resolve()
+    if folder.is_file():
+        folder = folder.parent
+    while folder.name.lower() in (".claude", "hooks") and folder.parent != folder:
+        folder = folder.parent
+    return sanitize_skill_name(folder.name) or "project"
+
+
 def handle_inspect(target: Path) -> int:
     info = detect_claude_project(target)
     print(info.summary())
@@ -139,7 +169,11 @@ def handle_convert(
     mcp_only: bool = False,
     hooks_only: bool = False,
     user_config: list[str] | None = None,
+    install: str | None = None,
 ) -> int:
+    """Convert target into dest. With install ('project' or 'user'), dest is the Antigravity
+    folder from install_base: plugins go to plugins/<name>/, rules to rules/AGENTS.md, and
+    mcp_config.json and hooks.json are merged into existing files instead of replaced."""
     try:
         user_values = _parse_user_config(user_config or [])
     except ValueError as e:
@@ -161,7 +195,9 @@ def handle_convert(
 
     if is_plugin_conversion and target.is_dir():
         try:
-            plugin_path, p_summary = convert_plugin(target, dest, overwrite=overwrite, user_config=user_values)
+            plugin_path, p_summary = convert_plugin(
+                target, dest / "plugins" if install else dest, overwrite=overwrite, user_config=user_values
+            )
             print(f"  [+] Full Plugin packaged: {p_summary['plugin_name']} -> {plugin_path}")
             print(f"      - Manifest: plugin.json")
             print(f"      - Skills/Commands: {p_summary['skills_migrated']}")
@@ -184,6 +220,11 @@ def handle_convert(
 
     if user_values:
         print("      [!] Warning: --user-config only applies to plugin conversion; ignored.")
+
+    # Antigravity reads rules from rules/*.md in its folders, not from a loose AGENTS.md there
+    rules_dest = dest / "rules" if install else dest
+    merge = install is not None
+    hooks_group = _source_name(target) if install else "plugin"
 
     do_skills = skills_only if any_filter else True
     do_rules = rules_only if any_filter else True
@@ -208,7 +249,7 @@ def handle_convert(
         if info.rules_file:
             if do_rules:
                 try:
-                    res, warnings = convert_rules_file(info.rules_file, dest, overwrite=overwrite)
+                    res, warnings = convert_rules_file(info.rules_file, rules_dest, overwrite=overwrite)
                     print(f"  [+] Rules generated: {res.name} -> {res}")
                     for w in warnings:
                         print(f"      [!] Warning: {w}")
@@ -221,7 +262,7 @@ def handle_convert(
         elif info.mcp_file:
             if do_mcp:
                 try:
-                    res, warnings = convert_mcp_file(info.mcp_file, dest, overwrite=overwrite)
+                    res, warnings = convert_mcp_file(info.mcp_file, dest, overwrite=overwrite, merge=merge)
                     print(f"  [+] MCP config generated: {res.name} -> {res}")
                     for w in warnings:
                         print(f"      [!] Warning: {w}")
@@ -234,7 +275,9 @@ def handle_convert(
         elif info.hooks_file:
             if do_hooks:
                 try:
-                    res, warnings = convert_hooks_file(info.hooks_file, dest, overwrite=overwrite)
+                    res, warnings = convert_hooks_file(
+                        info.hooks_file, dest, plugin_name=hooks_group, overwrite=overwrite, merge=merge
+                    )
                     print(f"  [+] Hooks generated: {res.name} -> {res}")
                     for w in warnings:
                         print(f"      [!] Warning: {w}")
@@ -314,7 +357,7 @@ def handle_convert(
         # Convert Rules to AGENTS.md
         if do_rules and info.has_rules and info.rules_file:
             try:
-                res, warnings = convert_rules_file(info.rules_file, dest, overwrite=overwrite)
+                res, warnings = convert_rules_file(info.rules_file, rules_dest, overwrite=overwrite)
                 print(f"  [+] Rules generated: {res.name} -> {res}")
                 for w in warnings:
                     print(f"      [!] Warning: {w}")
@@ -327,7 +370,7 @@ def handle_convert(
         # Convert MCP to mcp_config.json
         if do_mcp and info.has_mcp and info.mcp_file:
             try:
-                res, warnings = convert_mcp_file(info.mcp_file, dest, overwrite=overwrite)
+                res, warnings = convert_mcp_file(info.mcp_file, dest, overwrite=overwrite, merge=merge)
                 print(f"  [+] MCP config generated: {res.name} -> {res}")
                 for w in warnings:
                     print(f"      [!] Warning: {w}")
@@ -340,7 +383,9 @@ def handle_convert(
         # Convert Hooks to hooks.json
         if do_hooks and info.has_hooks and info.hooks_file:
             try:
-                res, warnings = convert_hooks_file(info.hooks_file, dest, overwrite=overwrite)
+                res, warnings = convert_hooks_file(
+                    info.hooks_file, dest, plugin_name=hooks_group, overwrite=overwrite, merge=merge
+                )
                 print(f"  [+] Hooks generated: {res.name} -> {res}")
                 for w in warnings:
                     print(f"      [!] Warning: {w}")
@@ -391,9 +436,15 @@ def main(args: list[str] | None = None) -> int:
     if parsed_args.command == "inspect":
         return handle_inspect(parsed_args.target)
     elif parsed_args.command == "convert":
+        if parsed_args.install and parsed_args.dest is not None:
+            parser.error("--install chooses the destination itself; it cannot be used with --dest")
+        if parsed_args.install:
+            dest = install_base(parsed_args.install)
+        else:
+            dest = parsed_args.dest or Path("./output")
         return handle_convert(
             target=parsed_args.target,
-            dest=parsed_args.dest,
+            dest=dest,
             overwrite=parsed_args.overwrite,
             plugin=parsed_args.plugin,
             skills_only=parsed_args.skills_only,
@@ -401,6 +452,7 @@ def main(args: list[str] | None = None) -> int:
             mcp_only=parsed_args.mcp_only,
             hooks_only=parsed_args.hooks_only,
             user_config=parsed_args.user_config,
+            install=parsed_args.install,
         )
 
     return 0

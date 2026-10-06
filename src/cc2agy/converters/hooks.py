@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from cc2agy.converters.mcp import read_json_for_merge, write_json_with_backup
 from cc2agy.converters.variables import (
     RUNTIME_ENV_RE,
     PluginVariables,
@@ -367,13 +368,17 @@ def convert_hooks_file(
     dest_dir: Path,
     plugin_name: str = "plugin",
     overwrite: bool = False,
+    merge: bool = False,
 ) -> Tuple[Path, List[str]]:
-    """Read source hooks.json, convert to Antigravity format, and write to dest_dir/hooks.json."""
+    """Read source hooks.json, convert to Antigravity format, and write to dest_dir/hooks.json.
+
+    merge: add the converted hook group to an existing dest_dir/hooks.json (see write_hooks_data).
+    """
     source_path = source_path.resolve()
     dest_dir = dest_dir.resolve()
     dest_file = dest_dir / "hooks.json"
 
-    if dest_file.exists() and not overwrite:
+    if dest_file.exists() and not overwrite and not merge:
         raise FileExistsError(f"Destination hooks file already exists: {dest_file}")
 
     try:
@@ -384,7 +389,7 @@ def convert_hooks_file(
 
     variables = standalone_variables(source_path, dest_dir, scan_scripts=True)
     return write_hooks_data(
-        raw_data, dest_dir, plugin_name=plugin_name, overwrite=overwrite, variables=variables
+        raw_data, dest_dir, plugin_name=plugin_name, overwrite=overwrite, variables=variables, merge=merge
     )
 
 
@@ -395,18 +400,26 @@ def write_hooks_data(
     overwrite: bool = False,
     plugin_root: Optional[Path] = None,
     variables: Optional[PluginVariables] = None,
+    merge: bool = False,
 ) -> Tuple[Path, List[str]]:
     """Convert already-loaded Claude Code hooks data and write it to dest_dir/hooks.json.
 
     plugin_root defaults to dest_dir (a packaged plugin keeps its scripts beside hooks.json);
     variables, when given, takes precedence. The hook runner is written to
     dest_dir/cc2agy_hooks/ when any hook needs it.
+
+    With merge, an existing hooks.json is kept: the converted group ('<plugin_name>-hooks')
+    is added beside the groups already there, which are never touched; a group with the same
+    name needs overwrite. The previous file is saved as hooks.json.cc2agy.bak.
     """
     dest_dir = dest_dir.resolve()
     dest_file = dest_dir / "hooks.json"
     plugin_root = (plugin_root or dest_dir).resolve()
 
-    if dest_file.exists() and not overwrite:
+    existing: Optional[Dict[str, Any]] = None
+    if merge and dest_file.exists():
+        existing = read_json_for_merge(dest_file)
+    elif dest_file.exists() and not overwrite:
         raise FileExistsError(f"Destination hooks file already exists: {dest_file}")
 
     converted_config, warnings = convert_hooks_data(
@@ -414,9 +427,16 @@ def write_hooks_data(
     )
 
     dest_dir.mkdir(parents=True, exist_ok=True)
-    with open(dest_file, "w", encoding="utf-8") as f:
-        json.dump(converted_config, f, indent=2, ensure_ascii=False)
-        f.write("\n")
+    if existing is not None:
+        for hook_id in converted_config:
+            if hook_id in existing and not overwrite:
+                raise FileExistsError(f"Hook group '{hook_id}' already exists in {dest_file}")
+        existing.update(converted_config)
+        write_json_with_backup(dest_file, existing)
+    else:
+        with open(dest_file, "w", encoding="utf-8") as f:
+            json.dump(converted_config, f, indent=2, ensure_ascii=False)
+            f.write("\n")
 
     helper_file = dest_dir / CONTEXT_HELPER_DIR / CONTEXT_HELPER_FILE
     if helper_file.as_posix() in json.dumps(converted_config, ensure_ascii=False):
