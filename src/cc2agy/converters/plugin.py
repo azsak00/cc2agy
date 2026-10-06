@@ -367,14 +367,19 @@ def convert_plugin(
             skill_dirs.append(path)
 
     modular_skill_names: Set[str] = set()
+    # Shared across skill folders so two skills with the same name never replace each other
+    skill_claimed: Dict[str, str] = {}
     for s_dir in skill_dirs:
-        sk_results = migrate_skills_directory(s_dir, skills_dest, overwrite=overwrite, warnings=warnings)
+        sk_results = migrate_skills_directory(
+            s_dir, skills_dest, overwrite=overwrite, warnings=warnings, claimed=skill_claimed
+        )
         summary["skills_migrated"] += len(sk_results)
         modular_skill_names.update(r.parent.name if r.is_file() else r.name for r in sk_results)
     if root_skill:
         try:
             res = migrate_root_skill(
-                root_skill_file, source_dir.name, skills_dest, target_plugin_dir, overwrite=overwrite, warnings=warnings
+                root_skill_file, source_dir.name, skills_dest, target_plugin_dir, overwrite=overwrite,
+                warnings=warnings, claimed=skill_claimed,
             )
             summary["skills_migrated"] += 1
             modular_skill_names.add(res.parent.name)

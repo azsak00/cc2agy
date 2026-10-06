@@ -10,6 +10,7 @@ from typing import List, Optional, Set
 from cc2agy import locations
 from cc2agy.converters.commands import command_default_name
 from cc2agy.converters.hooks import SETTINGS_FILES
+from cc2agy.converters.skills import skill_name_for
 from cc2agy.locations import CLAUDE_PLUGIN_DIR, find_case_insensitive
 
 
@@ -127,11 +128,11 @@ class ClaudeProjectInfo:
 
         if self.has_skills:
             if (self.skills_dir / "SKILL.md").exists() or (self.skills_dir / "skill.md").exists():
-                lines.append(f"    - Modular Skill: {self.skills_dir.name}")
+                lines.append(f"    - Modular Skill: {skill_name_for(self.skills_dir)}")
             else:
                 try:
                     skills_found = [
-                        d.name for d in sorted(self.skills_dir.iterdir())
+                        skill_name_for(d) for d in sorted(self.skills_dir.iterdir())
                         if d.is_dir() and ((d / "SKILL.md").exists() or (d / "skill.md").exists())
                     ]
                 except (PermissionError, OSError):

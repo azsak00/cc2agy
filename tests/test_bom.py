@@ -92,8 +92,9 @@ class TestBomSources(unittest.TestCase):
         self._write("skills/rev/SKILL.md", "---\nname: outro\ndescription: Skill de revisao\n---\nCorpo.")
         code, _, err = self._convert(self.project)
         self.assertEqual(code, 0, err)
-        skill = (self.dest / "skills" / "rev" / "SKILL.md").read_bytes()
-        self.assertRegex(skill, rb"\A---\r?\nname: rev\r?\n")
+        # The frontmatter name is read through the BOM, so the skill takes it (as in Claude Code)
+        skill = (self.dest / "skills" / "outro" / "SKILL.md").read_bytes()
+        self.assertRegex(skill, rb"\A---\r?\nname: outro\r?\n")
 
     def test_rules_with_bom_are_written_without_it(self):
         self._write("CLAUDE.md", "# Regras\nSeja preciso.")

@@ -96,20 +96,20 @@ class TestSkillsMigrator(unittest.TestCase):
         self.assertIn("Updated", res.read_text(encoding="utf-8"))
 
     def test_migrate_skill_name_frontmatter_normalization(self):
-        # Folder is named 'My_Plugin_Skill' which sanitizes to 'my-plugin-skill'
+        # The frontmatter name wins over the folder name, as in Claude Code
         skill_src = self.base / "My_Plugin_Skill"
         skill_src.mkdir()
         (skill_src / "SKILL.md").write_text(
-            "---\nname: old-mismatched-name\ndescription: Some desc\n---\n\n# Body",
+            "---\nname: other-name\ndescription: Some desc\n---\n\n# Body",
             encoding="utf-8"
         )
 
         dest = self.base / "out"
         res = migrate_skill_folder(skill_src, dest)
 
-        self.assertEqual(res.parent.name, "my-plugin-skill")
+        self.assertEqual(res.parent.name, "other-name")
         content = res.read_text(encoding="utf-8")
-        self.assertIn("name: my-plugin-skill", content)
+        self.assertIn("name: other-name", content)
 
     def test_migrate_skill_rename_preserves_other_frontmatter(self):
         """Renaming must touch only the 'name' line: lists and colon values stay intact."""
@@ -132,7 +132,8 @@ class TestSkillsMigrator(unittest.TestCase):
         res = migrate_skill_folder(skill_src, self.base / "out")
         content = res.read_text(encoding="utf-8")
 
-        self.assertEqual(content, original.replace("name: Old_Name", "name: my-skill", 1))
+        self.assertEqual(res.parent.name, "old-name")
+        self.assertEqual(content, original.replace("name: Old_Name", "name: old-name", 1))
 
     def test_migrate_skill_inserts_missing_name_and_keeps_crlf(self):
         skill_src = self.base / "tool-x"

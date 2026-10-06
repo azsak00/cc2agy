@@ -13,9 +13,15 @@ import re
 import shutil
 import stat
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
-from .commands import adapt_prompt_arguments, frontmatter_list, parse_frontmatter, sanitize_skill_name
+from .commands import (
+    adapt_prompt_arguments,
+    claim_skill_name,
+    frontmatter_list,
+    parse_frontmatter,
+    sanitize_skill_name,
+)
 from .variables import PROJECT_DIR_RE
 
 
@@ -85,24 +91,73 @@ def _adapt_skill_body(content: str, skill_dir: Path, skill_name: str, warnings: 
     return head + adapted
 
 
+def _frontmatter_name(skill_file: Optional[Path]) -> Optional[str]:
+    """The top-level frontmatter 'name' of a SKILL.md (not a nested one, such as metadata.name),
+    or None when it has none or the file cannot be read."""
+    if skill_file is None:
+        return None
+    try:
+        content = skill_file.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return None
+    fm_match = _FRONTMATTER_RE.match(content)
+    name_match = _TOP_LEVEL_NAME_RE.search(fm_match.group(2)) if fm_match else None
+    if not name_match:
+        return None
+    raw_name = name_match.group(0).split(":", 1)[1].strip().strip("\"'")
+    return raw_name or None
+
+
+def _find_skill_file(skill_dir: Path) -> Optional[Path]:
+    for candidate in ("SKILL.md", "skill.md"):
+        if (skill_dir / candidate).is_file():
+            return skill_dir / candidate
+    return None
+
+
+def skill_name_for(skill_dir: Path, default_name: Optional[str] = None) -> str:
+    """The name Claude Code gives a skill folder: its frontmatter 'name', or else the folder
+    name (default_name when given), normalized for Antigravity (lowercase, hyphens)."""
+    raw_name = _frontmatter_name(_find_skill_file(skill_dir))
+    return sanitize_skill_name(raw_name or default_name or skill_dir.name)
+
+
+def _claim_skill(
+    skill_name: str, source: Path, claimed: Optional[Dict[str, str]], warnings: List[str]
+) -> str:
+    """Give the skill a name no other skill of this conversion run uses (name-2, ... with a warning)."""
+    if claimed is None:
+        return skill_name
+    return claim_skill_name(skill_name, str(source), claimed, warnings=warnings, kind="Skill")
+
+
 def migrate_skill_folder(
     source_skill_dir: Path,
     dest_skills_dir: Path,
     overwrite: bool = False,
     warnings: Optional[List[str]] = None,
+    claimed: Optional[Dict[str, str]] = None,
 ) -> Path:
     """Migrate an existing modular skill folder into the destination skills directory.
 
     Preserves all auxiliary subdirectories (references/, scripts/, assets/, etc.).
-    Ensures canonical kebab-case naming and YAML frontmatter compliance, and adapts the
-    SKILL.md body (see _adapt_skill_body); messages go to `warnings` when given.
+    The skill takes the name Claude Code gives it (see skill_name_for), unique within the run
+    when `claimed` is shared across calls; adapts the SKILL.md body (see _adapt_skill_body).
+    Messages go to `warnings` when given.
     """
     if warnings is None:
         warnings = []
     if not source_skill_dir.exists() or not source_skill_dir.is_dir():
         raise FileNotFoundError(f"Source skill folder not found: {source_skill_dir}")
 
-    skill_name = sanitize_skill_name(source_skill_dir.name)
+    skill_name = skill_name_for(source_skill_dir)
+    folder_name = sanitize_skill_name(source_skill_dir.name)
+    if skill_name != folder_name:
+        warnings.append(
+            f"Skill folder '{source_skill_dir.name}' converted as '{skill_name}', its frontmatter name, "
+            f"as Claude Code names it; /{folder_name} does not invoke it in Antigravity."
+        )
+    skill_name = _claim_skill(skill_name, source_skill_dir, claimed, warnings)
     target_skill_dir = dest_skills_dir / skill_name
 
     # Refuse overlapping source/destination: the overwrite step below would delete the source
@@ -162,6 +217,7 @@ def migrate_root_skill(
     files_dir: Path,
     overwrite: bool = False,
     warnings: Optional[List[str]] = None,
+    claimed: Optional[Dict[str, str]] = None,
 ) -> Path:
     """Convert the SKILL.md at a plugin root, which Claude Code loads as one skill, into
     dest_skills_dir/<name>/SKILL.md. The name is the frontmatter 'name', or default_name (the
@@ -173,9 +229,9 @@ def migrate_root_skill(
         warnings = []
     with open(skill_file, "r", encoding="utf-8-sig", errors="replace", newline="") as f:
         content = f.read()
-    meta, _ = parse_frontmatter(content)
-    raw_name = meta.get("name")
-    skill_name = sanitize_skill_name(raw_name if isinstance(raw_name, str) and raw_name.strip() else default_name)
+    skill_name = _claim_skill(
+        skill_name_for(skill_file.parent, default_name), skill_file, claimed, warnings
+    )
 
     target_skill_dir = dest_skills_dir / skill_name
     target_skill_file = target_skill_dir / "SKILL.md"
@@ -205,6 +261,7 @@ def migrate_skills_directory(
     overwrite: bool = False,
     failures: Optional[List[Tuple[Path, Exception]]] = None,
     warnings: Optional[List[str]] = None,
+    claimed: Optional[Dict[str, str]] = None,
 ) -> List[Path]:
     """Scan and migrate all modular skills from a source directory.
 
@@ -221,6 +278,9 @@ def migrate_skills_directory(
 
     dest_skills_dir.mkdir(parents=True, exist_ok=True)
     migrated: List[Path] = []
+    # Skill names already given in this run; share it across calls (e.g. a plugin's skill folders)
+    if claimed is None:
+        claimed = {}
 
     # Case 1: The source directory itself is a single skill folder
     if (skills_source / "SKILL.md").exists() or (skills_source / "skill.md").exists():
@@ -234,7 +294,9 @@ def migrate_skills_directory(
 
     for item in candidates:
         try:
-            res = migrate_skill_folder(item, dest_skills_dir, overwrite=overwrite, warnings=warnings)
+            res = migrate_skill_folder(
+                item, dest_skills_dir, overwrite=overwrite, warnings=warnings, claimed=claimed
+            )
             migrated.append(res)
         except FileExistsError as e:
             if warnings is not None:
