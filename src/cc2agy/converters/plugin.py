@@ -63,6 +63,22 @@ NOT_COPIED_DIRS = {
     "themes",
     "monitors",
 }
+# Root files not copied: files Antigravity would read as the converted plugin's own
+# configuration, source files already converted (copying .mcp.json would also duplicate any
+# credentials in it), and components with no equivalent (they are reported instead).
+# Every other root file (server.py, package.json, .env ...) is copied, as Claude Code keeps
+# the whole plugin folder.
+NOT_COPIED_FILES = {
+    "plugin.json",
+    "hooks.json",
+    "mcp_config.json",
+    ".mcp.json",
+    "mcp.json",
+    ".claude.json",
+    "claude.md",
+    "settings.json",
+    ".lsp.json",
+}
 
 
 def sanitize_skill_content(
@@ -260,7 +276,8 @@ def convert_plugin(
     │   └── <skill>/SKILL.md
     ├── agents/           (optional)
     │   └── <agent>.md
-    └── ...               (every other plugin folder, copied; see NOT_COPIED_DIRS)
+    └── ...               (every other plugin folder and root file, copied; see NOT_COPIED_DIRS
+                           and NOT_COPIED_FILES)
     """
     source_dir = source_dir.resolve()
     dest_dir = dest_dir.resolve()
@@ -564,17 +581,28 @@ def convert_plugin(
         except Exception as e:
             summary["warnings"].append(f"Failed to copy auxiliary directory '{item.name}': {e}")
 
-    # 10. Copy auxiliary root documentation / license files
-    auxiliary_files = ["README.md", "LICENSE", "LICENSE.md", "CHANGELOG.md"]
-    for aux_name in auxiliary_files:
-        aux_src = _find_case_insensitive(source_dir, aux_name)
-        if aux_src and aux_src.is_file():
-            aux_dest = target_plugin_dir / aux_src.name
-            if not aux_dest.exists() or overwrite:
-                try:
-                    shutil.copy2(aux_src, aux_dest)
-                except Exception as e:
-                    summary["warnings"].append(f"Failed to copy auxiliary file '{aux_src.name}': {e}")
+    # 10. Copy the other root files (MCP servers, package.json, scripts, docs, etc.)
+    for item in sorted(source_dir.iterdir()):
+        item_lower = item.name.lower()
+        if not item.is_file() or item_lower in NOT_COPIED_FILES or item_lower.startswith(".git"):
+            continue
+        aux_dest = target_plugin_dir / item.name
+        if aux_dest.exists() and not overwrite:
+            continue
+        try:
+            shutil.copy2(item, aux_dest)
+        except Exception as e:
+            summary["warnings"].append(f"Failed to copy root file '{item.name}': {e}")
+            continue
+        if item_lower == ".env" or item_lower.startswith(".env."):
+            warnings.append(
+                f"{item.name} copied into the converted plugin: it may hold passwords or keys in plain text."
+            )
+        elif item_lower in ("agents.md", "gemini.md"):
+            warnings.append(
+                f"{item.name} copied to the plugin root; Antigravity's documentation does not say whether "
+                "it is loaded there as a rule."
+            )
 
     # 11. Warn about components Antigravity plugins cannot hold
     _warn_unsupported_components(source_dir, manifest_data, warnings)

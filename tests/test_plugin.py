@@ -442,6 +442,43 @@ class TestPluginConverter(unittest.TestCase):
             self.assertTrue(any("rules/ not copied" in w and "style.md" in w for w in summary["warnings"]))
             self.assertEqual(sorted(summary["auxiliary_dirs_copied"]), ["dist", "node_modules", "servers"])
 
+    def test_every_other_root_file_is_copied(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            plugin = self._make_plugin(tmp_path, {"name": "plug"})
+            files = {
+                "server.py": "print('mcp')",
+                "package.json": '{"name": "plug-server"}',
+                "requirements.txt": "mcp",
+                ".env": "TOKEN=x",
+                "README.md": "Readme",
+                "AGENTS.md": "Agent notes",
+                "CLAUDE.md": "Rule.",
+                "plugin.json": '{"name": "stray", "version": "1"}',
+                "mcp_config.json": '{"mcpServers": {"stray": {"command": "x"}}}',
+                "hooks.json": json.dumps({"hooks": {"Stop": [{"hooks": [{"command": "echo stop"}]}]}}),
+                "settings.json": '{"agent": "helper"}',
+                ".gitignore": "out/",
+            }
+            for rel, text in files.items():
+                (plugin / rel).write_text(text, encoding="utf-8")
+            (plugin / ".mcp.json").write_text(json.dumps({"mcpServers": {"eco": {
+                "command": "python", "args": ["${CLAUDE_PLUGIN_ROOT}/server.py"]}}}), encoding="utf-8")
+
+            plugin_dir, summary = convert_plugin(plugin, tmp_path / "out", overwrite=True)
+
+            server = json.loads((plugin_dir / "mcp_config.json").read_text(encoding="utf-8"))["mcpServers"]
+            self.assertEqual(list(server), ["eco"])
+            self.assertTrue(Path(server["eco"]["args"][0]).is_file())
+            for copied in ("package.json", "requirements.txt", ".env", "README.md", "AGENTS.md"):
+                self.assertTrue((plugin_dir / copied).is_file(), copied)
+            self.assertEqual(json.loads((plugin_dir / "plugin.json").read_text(encoding="utf-8"))["name"], "plug")
+            self.assertIn("plug-hooks", json.loads((plugin_dir / "hooks.json").read_text(encoding="utf-8")))
+            for skipped in (".mcp.json", "CLAUDE.md", "settings.json", ".gitignore"):
+                self.assertFalse((plugin_dir / skipped).exists(), skipped)
+            self.assertTrue(any(".env copied" in w for w in summary["warnings"]))
+            self.assertTrue(any("AGENTS.md copied" in w for w in summary["warnings"]))
+
     def test_destination_inside_plugin_is_not_copied_into_itself(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             plugin = self._make_plugin(Path(tmp_dir), {"name": "plug"})
