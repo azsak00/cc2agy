@@ -294,7 +294,9 @@ def handle_convert(
                 try:
                     name_warnings: list[str] = []
                     command_skill_name(info.command_files[0], warnings=name_warnings)
-                    res = convert_command_file(info.command_files[0], skills_dest, overwrite=overwrite)
+                    res = convert_command_file(
+                        info.command_files[0], skills_dest, overwrite=overwrite, warnings=name_warnings
+                    )
                     print(f"  [+] Skill generated: {res.parent.name} -> {res}")
                     for w in name_warnings:
                         print(f"      [!] Warning: {w}")

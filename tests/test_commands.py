@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -29,6 +30,7 @@ from cc2agy.converters.commands import (
     parse_frontmatter,
     sanitize_skill_name,
 )
+from cc2agy.converters.plugin import convert_plugin
 from cc2agy.detector import detect_claude_project
 
 
@@ -107,7 +109,8 @@ class TestCommandsConverter(unittest.TestCase):
     def test_adapt_prompt_arguments(self):
         prompt = "Run test on file $1 with extra flags $ARGUMENTS"
         adapted = adapt_prompt_arguments(prompt)
-        self.assertIn("[Argument 1 provided by user]", adapted)
+        # $N is 0-based in Claude Code: $1 is the second argument
+        self.assertIn("[Argument 2 provided by user]", adapted)
         self.assertIn("[User Arguments provided after the slash command]", adapted)
         self.assertIn("migrated from a Claude Code slash command", adapted)
 
@@ -122,7 +125,8 @@ class TestCommandsConverter(unittest.TestCase):
 
         # Longer identifiers are not placeholders
         untouched = adapt_prompt_arguments("Set $ARGUMENTS_LIST manually.")
-        self.assertEqual(untouched, "Set $ARGUMENTS_LIST manually.")
+        self.assertTrue(untouched.startswith("Set $ARGUMENTS_LIST manually."))
+        self.assertNotIn("[User Arguments", untouched)
 
     def test_adapt_prompt_arguments_protection(self):
         """Ensure monetary values ($50) and code blocks are not corrupted."""
@@ -143,7 +147,67 @@ class TestCommandsConverter(unittest.TestCase):
         self.assertIn("echo $1 and $ARGUMENTS", adapted)
 
         # Legitimate outside parameter adapted
-        self.assertIn("Apply user argument [Argument 1 provided by user] now.", adapted)
+        self.assertIn("Apply user argument [Argument 2 provided by user] now.", adapted)
+
+    def test_adapt_prompt_arguments_follow_claude_code_placeholders(self):
+        adapted = adapt_prompt_arguments(
+            "Fix issue $0 on branch $1; first again: $ARGUMENTS[0], third: $ARGUMENTS[2]. "
+            "Literal: \\$1 and \\$ARGUMENTS. Named: $issue / $branch, not $other.",
+            ["issue", "branch"],
+        )
+        self.assertIn("Fix issue [Argument 1 provided by user] on branch [Argument 2 provided by user]", adapted)
+        self.assertIn("first again: [Argument 1 provided by user], third: [Argument 3 provided by user]", adapted)
+        self.assertIn("Literal: $1 and $ARGUMENTS.", adapted)
+        self.assertIn("Named: [Argument 1 ('issue') provided by user] / [Argument 2 ('branch') provided by user], "
+                      "not $other.", adapted)
+
+    def test_adapt_prompt_arguments_without_placeholder_appends_arguments_note(self):
+        adapted = adapt_prompt_arguments("Summarize the current diff.")
+        self.assertTrue(adapted.startswith("Summarize the current diff."))
+        self.assertIn("treat them as `ARGUMENTS: <what the user typed>`", adapted)
+        self.assertNotIn("ARGUMENTS: <what", adapt_prompt_arguments("Review $ARGUMENTS"))
+
+    def test_command_metadata_goes_into_description_or_warnings(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            source = tmp_path / "deploy.md"
+            source.write_text(
+                "---\n"
+                "description: Deploys the app\n"
+                "when_to_use: Use when the user asks to ship a release.\n"
+                "argument-hint: [environment] [version]\n"
+                "arguments:\n"
+                "  - environment\n"
+                "  - version\n"
+                "allowed-tools: Bash(git *)\n"
+                "model: opus\n"
+                "disable-model-invocation: true\n"
+                "---\n"
+                "Deploy $version to $environment.\n",
+                encoding="utf-8",
+            )
+            warnings: list = []
+            skill = convert_command_file(source, tmp_path / "skills", warnings=warnings)
+            content = skill.read_text(encoding="utf-8")
+        self.assertIn('description: "Deploys the app. Use when the user asks to ship a release. '
+                      'Arguments: [environment] [version]"', content)
+        self.assertIn("Deploy [Argument 2 ('version') provided by user] to "
+                      "[Argument 1 ('environment') provided by user].", content)
+        self.assertTrue(any("dropped: allowed-tools, disable-model-invocation, model." in w for w in warnings))
+        self.assertTrue(any("may run the converted skill on its own" in w for w in warnings))
+
+    def test_plugin_manifest_command_fields(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            plugin = Path(tmp_dir) / "plug"
+            (plugin / ".claude-plugin").mkdir(parents=True)
+            (plugin / ".claude-plugin" / "plugin.json").write_text(json.dumps({"name": "plug", "commands": {
+                "about": {"content": "Explain the plugin.", "description": "About the plugin",
+                          "argumentHint": "[topic]", "model": "haiku", "allowedTools": ["Read"]}}}), encoding="utf-8")
+            plugin_dir, summary = convert_plugin(plugin, Path(tmp_dir) / "out", overwrite=True)
+            content = (plugin_dir / "skills" / "about" / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn('description: "About the plugin. Arguments: [topic]"', content)
+        self.assertTrue(any("plugin.json commands.about" in w and "plugin.json allowedTools, plugin.json model" in w
+                            for w in summary["warnings"]))
 
     def test_convert_single_command_file(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

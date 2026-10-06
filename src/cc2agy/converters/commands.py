@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import unicodedata
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 
 def sanitize_skill_name(raw_name: str) -> str:
@@ -79,11 +79,28 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, str], str]:
                     # Literal scalar: join lines with newlines
                     frontmatter[key] = "\n".join(multiline_val).strip()
                 continue
+            elif not val:
+                # Block list ("key:" followed by "  - item" lines): items joined by newlines
+                items: List[str] = []
+                while i + 1 < len(lines) and re.match(r"^\s*-\s+", lines[i + 1]):
+                    i += 1
+                    items.append(re.sub(r"^\s*-\s+", "", lines[i]).strip().strip("\"'"))
+                frontmatter[key] = "\n".join(items)
             else:
                 frontmatter[key] = val.strip("\"'")
         i += 1
 
     return frontmatter, body.strip()
+
+
+def frontmatter_list(value: Optional[str]) -> List[str]:
+    """Items of a frontmatter list given as '[a, b]', 'a b', 'a, b' or a block list."""
+    if not value:
+        return []
+    text = value.strip()
+    if text.startswith("[") and text.endswith("]"):
+        text = text[1:-1]
+    return [item.strip().strip("\"'") for item in re.split(r"[,\s]+", text) if item.strip().strip("\"'")]
 
 
 def escape_yaml_string(text: str) -> str:
@@ -121,42 +138,70 @@ def extract_description(body: str, metadata: Dict[str, str], command_name: str) 
     return f"Executes the /{command_name} command migrated from Claude Code."
 
 
-def adapt_prompt_arguments(body: str) -> str:
-    """Adapt Claude Code argument placeholders ($ARGUMENTS, $1..$9) for Antigravity instructions.
+def adapt_prompt_arguments(body: str, named: Optional[List[str]] = None) -> str:
+    """Adapt Claude Code argument placeholders for Antigravity instructions.
+
+    Placeholders, as Claude Code documents them: $ARGUMENTS (all arguments), $ARGUMENTS[N]
+    and its shorthand $N (0-based: $0 is the first argument), and $name for the names
+    declared in the `arguments` frontmatter (in order). A backslash before a placeholder
+    (\\$1) keeps it literal, without the backslash. Without any placeholder, Claude Code
+    appends the typed arguments as "ARGUMENTS: <value>"; a closing note asks for the same.
 
     Isolates markdown code blocks (fenced ``` and inline `) to avoid corrupting bash scripts
     or code examples, and applies strict word boundaries to avoid replacing monetary values ($50).
     """
-    code_blocks: List[str] = []
+    stash: List[str] = []
 
-    def _stash_code(match: re.Match) -> str:
-        code_blocks.append(match.group(0))
-        return f"__CC2AGY_CODE_STASH_{len(code_blocks)-1}__"
+    def _stash(text: str) -> str:
+        stash.append(text)
+        return f"__CC2AGY_CODE_STASH_{len(stash)-1}__"
 
-    # 1. Stash fenced code blocks, then inline code
-    protected = re.sub(r"```[\s\S]*?```", _stash_code, body)
-    protected = re.sub(r"`[^`\n]+`", _stash_code, protected)
+    # 1. Stash fenced code blocks, then inline code, then escaped placeholders (kept literal)
+    protected = re.sub(r"```[\s\S]*?```", lambda m: _stash(m.group(0)), body)
+    protected = re.sub(r"`[^`\n]+`", lambda m: _stash(m.group(0)), protected)
+    names = [n for n in (named or []) if re.fullmatch(r"[A-Za-z_]\w*", n) and n != "ARGUMENTS"]
+    token = r"\$(?:ARGUMENTS(?:\[\d+\])?|[0-9]" + "".join(f"|{re.escape(n)}" for n in names) + r")\b"
+    protected = re.sub(r"\\(" + token + r")", lambda m: _stash(m.group(1)), protected)
 
-    # 2. Check for legitimate argument variables with strict word boundary
-    # (no \b before "$": "$" is not a word character, so \b would demand a letter before it)
-    has_arguments = bool(re.search(r"(?:\$ARGUMENTS\b|\$[1-9]\b)", protected))
+    # 2. Replace the placeholders (no \b before "$": it is not a word character)
+    def _position(index: int) -> str:
+        return f"[Argument {index + 1} provided by user]"
 
-    if has_arguments:
-        # Replace $ARGUMENTS
-        protected = re.sub(r"\$ARGUMENTS\b", "[User Arguments provided after the slash command]", protected)
-        # Replace $1..$9 (guaranteeing not matching $50, $100, etc.)
-        protected = re.sub(r"\$([1-9])\b", r"[Argument \1 provided by user]", protected)
+    count = 0
 
-        notice = (
+    def _count(text: str) -> str:
+        nonlocal count
+        count += 1
+        return text
+
+    protected = re.sub(r"\$ARGUMENTS\[(\d+)\]", lambda m: _count(_position(int(m.group(1)))), protected)
+    protected = re.sub(r"\$ARGUMENTS\b", lambda m: _count("[User Arguments provided after the slash command]"), protected)
+    # $0..$9, never $50 or $100
+    protected = re.sub(r"\$([0-9])\b", lambda m: _count(_position(int(m.group(1)))), protected)
+    for index, name in enumerate(names):
+        protected = re.sub(
+            r"\$" + re.escape(name) + r"\b",
+            lambda m, i=index, n=name: _count(f"[Argument {i + 1} ('{n}') provided by user]"),
+            protected,
+        )
+
+    if count:
+        protected = (
             "> [!NOTE]\n"
             "> This skill was migrated from a Claude Code slash command. "
             "Any user parameters passed after the slash command should be applied to the placeholders below.\n\n"
+            + protected
         )
-        protected = notice + protected
+    else:
+        protected += (
+            "\n\n> [!NOTE]\n"
+            "> This skill was migrated from a Claude Code slash command. If the user typed arguments "
+            "after the command name, treat them as `ARGUMENTS: <what the user typed>` for these instructions."
+        )
 
-    # 3. Restore code blocks
-    for idx, block in enumerate(code_blocks):
-        protected = protected.replace(f"__CC2AGY_CODE_STASH_{idx}__", block)
+    # 3. Restore code blocks and escaped placeholders
+    for idx in range(len(stash) - 1, -1, -1):
+        protected = protected.replace(f"__CC2AGY_CODE_STASH_{idx}__", stash[idx])
 
     return protected
 
@@ -238,6 +283,8 @@ def convert_command_file(
     overwrite: bool = False,
     description: Optional[str] = None,
     default_name: Optional[str] = None,
+    warnings: Optional[List[str]] = None,
+    manifest_spec: Optional[Dict[str, Any]] = None,
 ) -> Path:
     """Convert a single Claude Code command file into an Antigravity Skill folder."""
     return convert_command_text(
@@ -247,7 +294,36 @@ def convert_command_file(
         custom_name=custom_name,
         overwrite=overwrite,
         description=description,
+        warnings=warnings,
+        manifest_spec=manifest_spec,
+        label=str(source_file),
     )
+
+
+# Command frontmatter fields the skill keeps: the name comes from the path, description,
+# when_to_use and argument-hint go into the skill description, arguments names placeholders
+CONVERTED_COMMAND_FIELDS = {"name", "description", "when_to_use", "argument-hint", "arguments"}
+# plugin.json "commands" map fields the skill keeps
+CONVERTED_MANIFEST_FIELDS = {"source", "content", "description", "argumentHint"}
+
+
+def _report_dropped_fields(
+    meta: Dict[str, str], manifest_spec: Dict[str, Any], label: str, warnings: Optional[List[str]]
+) -> None:
+    """Warn about command fields Antigravity skills have no equivalent for."""
+    if warnings is None:
+        return
+    dropped = sorted(k for k in meta if k not in CONVERTED_COMMAND_FIELDS)
+    dropped += sorted(f"plugin.json {k}" for k in manifest_spec if k not in CONVERTED_MANIFEST_FIELDS)
+    if dropped:
+        warnings.append(
+            f"Command '{label}': fields with no Antigravity skill equivalent were dropped: {', '.join(dropped)}."
+        )
+    if meta.get("disable-model-invocation", "").strip().lower() == "true":
+        warnings.append(
+            f"Command '{label}' sets disable-model-invocation (only the user may run it), which Antigravity "
+            "skills do not document: the model may run the converted skill on its own."
+        )
 
 
 def convert_command_text(
@@ -257,19 +333,39 @@ def convert_command_text(
     custom_name: Optional[str] = None,
     overwrite: bool = False,
     description: Optional[str] = None,
+    warnings: Optional[List[str]] = None,
+    manifest_spec: Optional[Dict[str, Any]] = None,
+    label: Optional[str] = None,
 ) -> Path:
     """Convert Claude Code command Markdown (from a file or inline in plugin.json) into a Skill folder.
 
-    `description`, when given, takes precedence over the frontmatter and body.
+    `description`, when given, takes precedence over the frontmatter and body. `when_to_use`
+    and the argument hint (frontmatter `argument-hint`, else plugin.json `argumentHint` in
+    `manifest_spec`) are appended to it, as Claude Code lists them. Fields with no
+    equivalent are reported in `warnings`.
     """
     meta, raw_body = parse_frontmatter(raw_content)
+    manifest_spec = manifest_spec or {}
 
     # Determine canonical skill name
     skill_name = _resolve_skill_name(default_name, custom_name)
+    _report_dropped_fields(meta, manifest_spec, label or skill_name, warnings)
 
     # Generate description and adapt body
     description = description or extract_description(raw_body, meta, skill_name)
-    body = adapt_prompt_arguments(raw_body)
+
+    def _sentence(text: str) -> str:
+        text = text.rstrip()
+        return text if text.endswith((".", "!", "?", ":")) else text + "."
+
+    if meta.get("when_to_use", "").strip():
+        description = f"{_sentence(description)} {meta['when_to_use'].strip()}"
+    hint = meta.get("argument-hint", "").strip()
+    if not hint and isinstance(manifest_spec.get("argumentHint"), str):
+        hint = manifest_spec["argumentHint"].strip()
+    if hint:
+        description = f"{_sentence(description)} Arguments: {hint}"
+    body = adapt_prompt_arguments(raw_body, frontmatter_list(meta.get("arguments")))
 
     # Target folder and SKILL.md path
     skill_folder = dest_skills_dir / skill_name
@@ -332,7 +428,9 @@ def convert_commands_directory(
                 if skip_names and name in skip_names:
                     continue
                 name = claim_skill_name(name, str(md_file), claimed, skip_names, warnings)
-                skill_path = convert_command_file(md_file, dest_skills_dir, custom_name=name, overwrite=overwrite)
+                skill_path = convert_command_file(
+                    md_file, dest_skills_dir, custom_name=name, overwrite=overwrite, warnings=warnings
+                )
                 converted.append(skill_path)
             except FileExistsError:
                 # Safe skip when overwrite is False

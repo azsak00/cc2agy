@@ -210,6 +210,7 @@ def _convert_declared_commands(
                     convert_command_text(
                         spec["content"], skills_dest, default_name=name,
                         custom_name=skill_name, overwrite=overwrite, description=description,
+                        warnings=warnings, manifest_spec=spec, label=f"plugin.json commands.{name}",
                     )
                 elif "source" in spec:
                     path = _resolve_component_path(source_dir, spec["source"], f"commands.{name}", warnings)
@@ -219,7 +220,8 @@ def _convert_declared_commands(
                         skill_name, f"plugin.json commands.{name}", claimed, skip_names, warnings
                     )
                     convert_command_file(
-                        path, skills_dest, custom_name=skill_name, overwrite=overwrite, description=description
+                        path, skills_dest, custom_name=skill_name, overwrite=overwrite, description=description,
+                        warnings=warnings, manifest_spec=spec,
                     )
                 else:
                     warnings.append(f"plugin.json 'commands.{name}' needs 'source' or 'content'; skipped.")
@@ -246,7 +248,7 @@ def _convert_declared_commands(
                 continue
             skill_name = claim_skill_name(skill_name, str(path), claimed, skip_names, warnings)
             try:
-                convert_command_file(path, skills_dest, custom_name=skill_name, overwrite=overwrite)
+                convert_command_file(path, skills_dest, custom_name=skill_name, overwrite=overwrite, warnings=warnings)
                 converted += 1
             except FileExistsError:
                 continue
