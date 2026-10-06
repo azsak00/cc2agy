@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Set
 
+from cc2agy.converters.commands import command_default_name
+
 
 CLAUDE_PLUGIN_DIR = ".claude-plugin"
 
@@ -83,6 +85,13 @@ class ClaudeProjectInfo:
             or self.is_plugin
         )
 
+    def _command_name(self, cmd: Path) -> str:
+        """Name a command file with its subfolders (commands/git/commit.md -> git-commit)."""
+        for c_dir in self.commands_dirs:
+            if cmd.is_relative_to(c_dir):
+                return command_default_name(cmd, c_dir)
+        return cmd.stem
+
     def summary(self) -> str:
         """Return a formatted string describing the detected resources."""
         lines = [f"Analysis of: {self.root_path}"]
@@ -95,7 +104,7 @@ class ClaudeProjectInfo:
             dirs_str = ", ".join(str(d.name) for d in self.commands_dirs)
             lines.append(f"    - Commands ({len(self.command_files)} files in [{dirs_str}]):")
             for cmd in self.command_files[:5]:
-                lines.append(f"        /{cmd.stem}")
+                lines.append(f"        /{self._command_name(cmd)}")
             if len(self.command_files) > 5:
                 lines.append(f"        ... and {len(self.command_files) - 5} more")
 

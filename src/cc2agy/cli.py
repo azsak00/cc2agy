@@ -244,14 +244,20 @@ def handle_convert(
         if do_skills and info.has_commands:
             skills_dest = dest if dest.name == "skills" else dest / "skills"
             skills_dest.mkdir(parents=True, exist_ok=True)
+            # Shared across command folders so commands/ and .claude/commands/ never collide
+            claimed_names: dict[str, str] = {}
             for c_dir in info.commands_dirs:
                 cmd_failures: list[tuple[Path, Exception]] = []
+                cmd_warnings: list[str] = []
                 results = convert_commands_directory(
-                    c_dir, skills_dest, overwrite=overwrite, failures=cmd_failures
+                    c_dir, skills_dest, overwrite=overwrite, failures=cmd_failures,
+                    claimed=claimed_names, warnings=cmd_warnings,
                 )
                 for res in results:
                     print(f"  [+] Skill generated: {res.parent.name} -> {res}")
                     converted_skills += 1
+                for w in cmd_warnings:
+                    print(f"      [!] Warning: {w}")
                 for src, exc in cmd_failures:
                     report_failure("command", src, exc)
 

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from cc2agy.converters.commands import (
+    claim_skill_name,
     command_skill_name,
     convert_command_file,
     convert_command_text,
@@ -110,13 +111,15 @@ def _convert_declared_commands(
     overwrite: bool,
     skip_names: Set[str],
     warnings: List[str],
+    claimed: Dict[str, str],
 ) -> int:
     """Convert the commands declared in plugin.json (path, array of paths, or name map)."""
     converted = 0
 
     if isinstance(declared, dict):
         for name, spec in declared.items():
-            if sanitize_skill_name(name) in skip_names:
+            skill_name = sanitize_skill_name(name)
+            if skill_name in skip_names:
                 continue
             if not isinstance(spec, dict):
                 warnings.append(f"plugin.json 'commands.{name}' is not an object; skipped.")
@@ -124,16 +127,22 @@ def _convert_declared_commands(
             description = spec.get("description") if isinstance(spec.get("description"), str) else None
             try:
                 if isinstance(spec.get("content"), str):
+                    skill_name = claim_skill_name(
+                        skill_name, f"plugin.json commands.{name}", claimed, skip_names, warnings
+                    )
                     convert_command_text(
                         spec["content"], skills_dest, default_name=name,
-                        custom_name=name, overwrite=overwrite, description=description,
+                        custom_name=skill_name, overwrite=overwrite, description=description,
                     )
                 elif "source" in spec:
                     path = _resolve_component_path(source_dir, spec["source"], f"commands.{name}", warnings)
                     if path is None:
                         continue
+                    skill_name = claim_skill_name(
+                        skill_name, f"plugin.json commands.{name}", claimed, skip_names, warnings
+                    )
                     convert_command_file(
-                        path, skills_dest, custom_name=name, overwrite=overwrite, description=description
+                        path, skills_dest, custom_name=skill_name, overwrite=overwrite, description=description
                     )
                 else:
                     warnings.append(f"plugin.json 'commands.{name}' needs 'source' or 'content'; skipped.")
@@ -149,11 +158,18 @@ def _convert_declared_commands(
             continue
         if path.is_dir():
             converted += len(
-                convert_commands_directory(path, skills_dest, overwrite=overwrite, skip_names=skip_names)
+                convert_commands_directory(
+                    path, skills_dest, overwrite=overwrite, skip_names=skip_names,
+                    claimed=claimed, warnings=warnings,
+                )
             )
-        elif command_skill_name(path) not in skip_names:
+        else:
+            skill_name = command_skill_name(path)
+            if skill_name in skip_names:
+                continue
+            skill_name = claim_skill_name(skill_name, str(path), claimed, skip_names, warnings)
             try:
-                convert_command_file(path, skills_dest, overwrite=overwrite)
+                convert_command_file(path, skills_dest, custom_name=skill_name, overwrite=overwrite)
                 converted += 1
             except FileExistsError:
                 continue
@@ -274,9 +290,11 @@ def convert_plugin(
 
     # Convert commands, honoring overwrite, but never replacing a modular skill of the same name.
     # plugin.json "commands" replaces the default commands/ scan.
+    claimed_names: Dict[str, str] = {}
     if "commands" in manifest_data:
         summary["skills_migrated"] += _convert_declared_commands(
-            manifest_data["commands"], source_dir, skills_dest, overwrite, modular_skill_names, warnings
+            manifest_data["commands"], source_dir, skills_dest, overwrite, modular_skill_names, warnings,
+            claimed_names,
         )
     else:
         commands_dir = source_dir / "commands"
@@ -284,7 +302,8 @@ def convert_plugin(
             commands_dir = source_dir / ".claude" / "commands"
         if commands_dir.exists() and commands_dir.is_dir():
             cmd_results = convert_commands_directory(
-                commands_dir, skills_dest, overwrite=overwrite, skip_names=modular_skill_names
+                commands_dir, skills_dest, overwrite=overwrite, skip_names=modular_skill_names,
+                claimed=claimed_names, warnings=warnings,
             )
             summary["skills_migrated"] += len(cmd_results)
 

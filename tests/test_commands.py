@@ -1,5 +1,7 @@
 """Unit tests for Claude Code command conversion, project detection, and CLI."""
 
+import contextlib
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -198,7 +200,26 @@ class TestCommandsConverter(unittest.TestCase):
 
             self.assertEqual(len(converted), 2)
             self.assertTrue((skills_dir / "commit" / "SKILL.md").exists())
-            self.assertTrue((skills_dir / "push" / "SKILL.md").exists())
+            # Like Claude Code (/git:push), the subfolder is part of the name
+            self.assertTrue((skills_dir / "git-push" / "SKILL.md").exists())
+
+    def test_nested_command_does_not_collide_with_root_command(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            cmd_dir = tmp_path / "commands"
+            (cmd_dir / "git").mkdir(parents=True)
+            (cmd_dir / "commit.md").write_text("# Commit\nROOT COMMIT", encoding="utf-8")
+            (cmd_dir / "git" / "commit.md").write_text("# Git Commit\nGIT COMMIT", encoding="utf-8")
+
+            skills_dir = tmp_path / "skills"
+            converted = convert_commands_directory(cmd_dir, skills_dir, overwrite=True)
+
+            self.assertEqual(len(converted), 2)
+            root_skill = (skills_dir / "commit" / "SKILL.md").read_text(encoding="utf-8")
+            git_skill = (skills_dir / "git-commit" / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn("ROOT COMMIT", root_skill)
+            self.assertIn("GIT COMMIT", git_skill)
+            self.assertIn("name: git-commit", git_skill)
 
 
 class TestDetector(unittest.TestCase):
@@ -252,6 +273,64 @@ class TestCLI(unittest.TestCase):
             exit_code_convert = main(["convert", str(root), "--dest", str(out_dir)])
             self.assertEqual(exit_code_convert, 0)
             self.assertTrue((out_dir / "skills" / "test" / "SKILL.md").exists())
+
+    def _convert(self, root: Path, out_dir: Path) -> tuple:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            code = main(["convert", str(root), "--dest", str(out_dir), "--overwrite"])
+        return code, stdout.getvalue() + stderr.getvalue()
+
+    def test_cli_duplicate_frontmatter_names_keep_both_with_warning(self):
+        """Two commands declaring the same name: neither may vanish or overwrite the other."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            cmd_dir = root / "commands"
+            cmd_dir.mkdir()
+            (cmd_dir / "a.md").write_text("---\nname: deploy\n---\nFROM A", encoding="utf-8")
+            (cmd_dir / "b.md").write_text("---\nname: deploy\n---\nFROM B", encoding="utf-8")
+            out_dir = root / "out"
+
+            for _ in range(2):  # re-running must give the same names, not deploy-3
+                code, output = self._convert(root, out_dir)
+
+            self.assertEqual(code, 0)
+            skills = out_dir / "skills"
+            self.assertIn("FROM A", (skills / "deploy" / "SKILL.md").read_text(encoding="utf-8"))
+            second = (skills / "deploy-2" / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn("FROM B", second)
+            self.assertIn("name: deploy-2", second)
+            self.assertFalse((skills / "deploy-3").exists())
+            self.assertIn("b.md", output)
+            self.assertIn("deploy-2", output)
+
+    def test_cli_same_command_name_in_two_command_folders(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "commands").mkdir()
+            (root / ".claude" / "commands").mkdir(parents=True)
+            (root / "commands" / "review.md").write_text("# Review\nFROM COMMANDS", encoding="utf-8")
+            (root / ".claude" / "commands" / "review.md").write_text("# Review\nFROM DOT CLAUDE", encoding="utf-8")
+            out_dir = root / "out"
+
+            code, output = self._convert(root, out_dir)
+
+            self.assertEqual(code, 0)
+            skills = out_dir / "skills"
+            self.assertIn("FROM COMMANDS", (skills / "review" / "SKILL.md").read_text(encoding="utf-8"))
+            self.assertIn("FROM DOT CLAUDE", (skills / "review-2" / "SKILL.md").read_text(encoding="utf-8"))
+            self.assertIn("review-2", output)
+
+    def test_cli_inspect_shows_subfolder_in_command_name(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "commands" / "git").mkdir(parents=True)
+            (root / "commands" / "git" / "commit.md").write_text("# Commit", encoding="utf-8")
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                main(["inspect", str(root)])
+
+            self.assertIn("/git-commit", stdout.getvalue())
 
 
 if __name__ == "__main__":

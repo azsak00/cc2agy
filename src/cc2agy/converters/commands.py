@@ -166,10 +166,50 @@ def _resolve_skill_name(meta: Dict[str, str], default_name: str, custom_name: Op
     return sanitize_skill_name(custom_name or meta.get("name") or default_name)
 
 
-def command_skill_name(source_file: Path) -> str:
+def command_default_name(source_file: Path, commands_dir: Optional[Path] = None) -> str:
+    """Return a command's name before frontmatter overrides.
+
+    Claude Code names a command in a subfolder after its path: commands/git/commit.md
+    is /git:commit. Antigravity skill names are kebab-case, so it becomes git-commit.
+    """
+    if commands_dir is not None:
+        try:
+            return "-".join(source_file.relative_to(commands_dir).with_suffix("").parts)
+        except ValueError:
+            pass
+    return source_file.stem
+
+
+def command_skill_name(source_file: Path, default_name: Optional[str] = None) -> str:
     """Return the skill name a command file converts to (same rule as convert_command_file)."""
     meta, _ = parse_frontmatter(source_file.read_text(encoding="utf-8"))
-    return _resolve_skill_name(meta, source_file.stem)
+    return _resolve_skill_name(meta, default_name or source_file.stem)
+
+
+def claim_skill_name(
+    name: str,
+    source: str,
+    claimed: Dict[str, str],
+    reserved: Optional[Set[str]] = None,
+    warnings: Optional[List[str]] = None,
+) -> str:
+    """Reserve a unique skill name for `source` within one conversion run.
+
+    The first command keeps `name`; a later one gets name-2, name-3, ... (skipping
+    `reserved` names) and a warning, so no command is dropped or overwritten.
+    """
+    unique = name
+    suffix = 2
+    while unique in claimed or (unique != name and reserved and unique in reserved):
+        unique = f"{name}-{suffix}"
+        suffix += 1
+    if unique != name and warnings is not None:
+        warnings.append(
+            f"Command '{source}' resolves to skill name '{name}', already used by '{claimed[name]}'; "
+            f"converted as '{unique}'."
+        )
+    claimed[unique] = source
+    return unique
 
 
 def convert_command_file(
@@ -178,12 +218,13 @@ def convert_command_file(
     custom_name: Optional[str] = None,
     overwrite: bool = False,
     description: Optional[str] = None,
+    default_name: Optional[str] = None,
 ) -> Path:
     """Convert a single Claude Code command file into an Antigravity Skill folder."""
     return convert_command_text(
         source_file.read_text(encoding="utf-8"),
         dest_skills_dir,
-        default_name=source_file.stem,
+        default_name=default_name or source_file.stem,
         custom_name=custom_name,
         overwrite=overwrite,
         description=description,
@@ -241,6 +282,8 @@ def convert_commands_directory(
     overwrite: bool = False,
     skip_names: Optional[Set[str]] = None,
     failures: Optional[List[Tuple[Path, Exception]]] = None,
+    claimed: Optional[Dict[str, str]] = None,
+    warnings: Optional[List[str]] = None,
 ) -> list[Path]:
     """Scan and convert all markdown command files inside a directory (including nested subfolders).
 
@@ -250,18 +293,26 @@ def convert_commands_directory(
         failures: When given, per-file read/conversion errors are collected here as
             (source_file, exception) and the remaining files are still converted.
             When omitted, the first error is raised.
+        claimed: Skill names already given to commands in this run (name -> source);
+            share it across calls so commands in different folders never collide.
+        warnings: When given, a renamed command (name collision) is reported here.
     """
     if not commands_dir.exists() or not commands_dir.is_dir():
         return []
 
+    if claimed is None:
+        claimed = {}
     converted: list[Path] = []
     # Collect all markdown files recursively
     for md_file in sorted(commands_dir.rglob("*.md")):
         if md_file.is_file():
             try:
-                if skip_names and command_skill_name(md_file) in skip_names:
+                default_name = command_default_name(md_file, commands_dir)
+                name = command_skill_name(md_file, default_name)
+                if skip_names and name in skip_names:
                     continue
-                skill_path = convert_command_file(md_file, dest_skills_dir, overwrite=overwrite)
+                name = claim_skill_name(name, str(md_file), claimed, skip_names, warnings)
+                skill_path = convert_command_file(md_file, dest_skills_dir, custom_name=name, overwrite=overwrite)
                 converted.append(skill_path)
             except FileExistsError:
                 # Safe skip when overwrite is False

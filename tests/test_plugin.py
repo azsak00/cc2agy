@@ -293,6 +293,41 @@ class TestPluginConverter(unittest.TestCase):
                 self.assertTrue((plugin_dir / "skills" / name / "SKILL.md").exists(), name)
             self.assertEqual(summary["skills_migrated"], 4)
 
+    def test_plugin_nested_commands_do_not_collide(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            plugin = self._make_plugin(tmp_path, {"name": "plug"})
+            (plugin / "commands" / "git").mkdir(parents=True)
+            (plugin / "commands" / "commit.md").write_text("# Commit\nROOT COMMIT", encoding="utf-8")
+            (plugin / "commands" / "git" / "commit.md").write_text("# Commit\nGIT COMMIT", encoding="utf-8")
+
+            plugin_dir, summary = convert_plugin(plugin, tmp_path / "out", overwrite=True)
+
+            skills = plugin_dir / "skills"
+            self.assertIn("ROOT COMMIT", (skills / "commit" / "SKILL.md").read_text(encoding="utf-8"))
+            self.assertIn("GIT COMMIT", (skills / "git-commit" / "SKILL.md").read_text(encoding="utf-8"))
+            self.assertEqual(summary["skills_migrated"], 2)
+
+    def test_manifest_commands_with_same_name_keep_both_with_warning(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            plugin = self._make_plugin(tmp_path, {
+                "name": "plug",
+                "commands": ["./commands/", "./extras/commit.md"],
+            })
+            (plugin / "commands").mkdir()
+            (plugin / "commands" / "commit.md").write_text("# Commit\nFROM COMMANDS", encoding="utf-8")
+            (plugin / "extras").mkdir()
+            (plugin / "extras" / "commit.md").write_text("# Commit\nFROM EXTRAS", encoding="utf-8")
+
+            plugin_dir, summary = convert_plugin(plugin, tmp_path / "out", overwrite=True)
+
+            skills = plugin_dir / "skills"
+            self.assertIn("FROM COMMANDS", (skills / "commit" / "SKILL.md").read_text(encoding="utf-8"))
+            self.assertIn("FROM EXTRAS", (skills / "commit-2" / "SKILL.md").read_text(encoding="utf-8"))
+            self.assertEqual(summary["skills_migrated"], 2)
+            self.assertTrue(any("commit-2" in w for w in summary["warnings"]))
+
     def test_cli_convert_plugin_autodetect(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
