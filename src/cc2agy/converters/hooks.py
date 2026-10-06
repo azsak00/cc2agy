@@ -68,8 +68,14 @@ The spec holds "mode", "command", "args" (a list for exec form, null for shell f
 - mode "always": runs before every model invocation; stdout becomes an injected message.
 - mode "pre_tool": Claude Code's PreToolUse result (exit code 2, permissionDecision, the
   deprecated decision field) becomes Antigravity's {"decision": ..., "reason": ...}.
-- modes "post_tool" and "stop": the hook runs for its side effects; Antigravity has no
-  equivalent for what Claude Code reads from its output, so nothing is printed.
+- mode "stop": a Claude Code request to keep working (exit code 2 or decision "block")
+  becomes {"decision": "continue", "reason": ...}; stop_hook_active is emulated with a marker
+  file per conversation and hook in the system temp folder.
+- mode "post_tool": the hook runs for its side effects; Antigravity has no equivalent for
+  what Claude Code reads from its output, so nothing is printed.
+In the modes named after Claude Code events, the hook's input gets Claude Code's fields
+(session_id, transcript_path, cwd, hook_event_name, tool_name, tool_input, tool_response,
+stop_hook_active) on top of Antigravity's; only tools with confirmed arguments are renamed.
 In every mode but "plain" the runner exits 0: Claude Code ignores errors other than exit 2,
 while Antigravity fails the hook (and blocks the tool) on any other code.
 The process receives the spec's environment (CLAUDE_PLUGIN_ROOT, CLAUDE_PLUGIN_DATA,
@@ -78,13 +84,30 @@ workspace path; ${CLAUDE_PROJECT_DIR} in the command and args is replaced with i
 Input and output pass through as UTF-8 bytes, whatever the system code page.
 """
 import base64
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import tempfile
 
 DECISIONS = {"allow": "allow", "deny": "deny", "ask": "ask", "approve": "allow", "block": "deny"}
+EVENT_NAMES = {"once": "SessionStart", "always": "UserPromptSubmit", "pre_tool": "PreToolUse",
+               "post_tool": "PostToolUse", "stop": "Stop"}
+# Antigravity tools whose arguments were confirmed (documentation and a real run) and their
+# Claude Code names; any other tool keeps its Antigravity name and arguments
+TOOL_NAMES = {"view_file": "Read", "write_to_file": "Write", "replace_file_content": "Edit",
+              "run_command": "Bash", "read_url_content": "WebFetch", "search_web": "WebSearch"}
+TOOL_ARGS = {
+    "view_file": {"AbsolutePath": "file_path"},
+    "write_to_file": {"TargetFile": "file_path", "CodeContent": "content"},
+    "replace_file_content": {"TargetFile": "file_path", "TargetContent": "old_string",
+                             "ReplacementContent": "new_string", "AllowMultiple": "replace_all"},
+    "run_command": {"CommandLine": "command"},
+    "read_url_content": {"Url": "url"},
+    "search_web": {"query": "query"},
+}
 
 
 def note(message):
@@ -138,13 +161,67 @@ def pre_tool_decision(returncode, stdout, stderr):
     return result
 
 
+def stop_decision(returncode, stdout, stderr):
+    """Antigravity Stop output for a Claude Code Stop result (None: let the agent stop)."""
+    data = claude_json(stdout)
+    if returncode == 2:
+        return {"decision": "continue", "reason": stderr.strip() or "A Stop hook asked to keep working."}
+    if returncode != 0 or data is None or data.get("continue") is False:
+        return None
+    if data.get("decision") == "block":
+        return {"decision": "continue", "reason": join(data.get("reason")) or "A Stop hook asked to keep working."}
+    return None
+
+
+def stop_marker(payload, spec):
+    """File marking that this Stop hook kept this conversation running (emulates stop_hook_active)."""
+    key = json.dumps([payload.get("conversationId", ""), spec.get("command"), spec.get("args")])
+    name = hashlib.sha1(key.encode("utf-8")).hexdigest()
+    return os.path.join(tempfile.gettempdir(), "cc2agy_stop", name)
+
+
+def claude_input(mode, payload, project_dir, stop_hook_active=False):
+    """The Antigravity hook input plus the fields a Claude Code hook reads."""
+    data = dict(payload)
+    data.update({
+        "session_id": payload.get("conversationId", ""),
+        "transcript_path": payload.get("transcriptPath", ""),
+        "cwd": project_dir,
+        "hook_event_name": EVENT_NAMES[mode],
+    })
+    if mode == "once":
+        data["source"] = "startup"
+    if mode == "stop":
+        data["stop_hook_active"] = stop_hook_active
+    call = payload.get("toolCall")
+    if isinstance(call, dict):
+        name = call.get("name", "")
+        args = call.get("args") if isinstance(call.get("args"), dict) else {}
+        renames = TOOL_ARGS.get(name)
+        if renames is None:
+            # No confirmed equivalent: the Antigravity name and arguments pass as they are
+            data["tool_name"] = name
+            data["tool_input"] = {k: v for k, v in args.items() if k not in ("toolAction", "toolSummary")}
+        else:
+            data["tool_name"] = TOOL_NAMES[name]
+            data["tool_input"] = {renames[k]: v for k, v in args.items() if k in renames}
+            if name == "view_file" and isinstance(args.get("StartLine"), int):
+                data["tool_input"]["offset"] = args["StartLine"]
+                if isinstance(args.get("EndLine"), int):
+                    data["tool_input"]["limit"] = args["EndLine"] - args["StartLine"] + 1
+        if mode == "post_tool":
+            # Antigravity sends only the tool error, not the tool result
+            data["tool_response"] = {"error": payload["error"]} if payload.get("error") else {}
+    return data
+
+
 def report_unsupported(mode, returncode, stdout):
     """Tell (on stderr) what a PostToolUse or Stop hook asked for that Antigravity cannot do."""
     data = claude_json(stdout) or {}
     extra = specific(data)
     asked = [k for k in ("additionalContext", "updatedToolOutput", "updatedMCPToolOutput") if k in extra]
-    if returncode == 2 or data.get("decision") == "block":
-        asked.insert(0, "keep the agent running" if mode == "stop" else "block after the tool ran")
+    if mode == "post_tool" and (returncode == 2 or data.get("decision") == "block"):
+        asked.insert(0, "block after the tool ran")
     if data.get("continue") is False:
         asked.append("stop the agent")
     if asked:
@@ -174,10 +251,20 @@ def main():
 
     command = fill(spec["command"])
     args = spec.get("args")
+    hook_input = raw_input
+    marker = None
+    if mode in EVENT_NAMES and isinstance(payload, dict):
+        stop_hook_active = False
+        if mode == "stop":
+            marker = stop_marker(payload, spec)
+            stop_hook_active = os.path.exists(marker)
+            if stop_hook_active:
+                os.remove(marker)
+        hook_input = json.dumps(claude_input(mode, payload, project_dir, stop_hook_active)).encode("utf-8")
     try:
         result = subprocess.run(
             [command] + [fill(a) for a in args] if args is not None else command,
-            shell=args is None, input=raw_input, capture_output=True, env=env,
+            shell=args is None, input=hook_input, capture_output=True, env=env,
         )
     except OSError as e:
         note(f"cannot start '{command}': {e}")
@@ -193,7 +280,15 @@ def main():
         if decision is not None:
             print(json.dumps(decision))
         return 0
-    if mode in ("post_tool", "stop"):
+    if mode == "stop":
+        decision = stop_decision(result.returncode, stdout, result.stderr.decode("utf-8", errors="replace"))
+        if decision is not None:
+            os.makedirs(os.path.dirname(marker), exist_ok=True)
+            open(marker, "w").close()
+            print(json.dumps(decision))
+        report_unsupported(mode, result.returncode, stdout)
+        return 0
+    if mode == "post_tool":
         report_unsupported(mode, result.returncode, stdout)
         return 0
     # Context modes: Claude Code adds stdout to the context only on exit 0; JSON output

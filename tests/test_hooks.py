@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from pathlib import Path
 
 from cc2agy.converters.hooks import (
@@ -306,10 +307,75 @@ class TestHookRunnerOutput(unittest.TestCase):
             "post_tool", json.dumps({"hookSpecificOutput": {"additionalContext": "Lint passed."}}), code=2)
         self.assertIsNone(output)
         self.assertIn("additionalContext", stderr)
-        output, stderr = self.run_hook("stop", json.dumps({"decision": "block", "reason": "Review first"}))
-        self.assertIsNone(output)
-        self.assertIn("keep the agent running", stderr)
         self.assertEqual(self.run_hook("stop", "done", code=1), (None, ""))
+        output, stderr = self.run_hook("stop", json.dumps({"continue": False, "decision": "block"}))
+        self.assertIsNone(output)
+        self.assertIn("stop the agent", stderr)
+
+    # Hook stand-in that echoes its stdin to stderr, and then prints argv[1] and exits with argv[2]
+    ECHO_HOOK = ("import sys; sys.stderr.write(sys.stdin.read()); "
+                 "sys.stdout.write(sys.argv[1]); sys.exit(int(sys.argv[2]))")
+
+    def run_echo(self, mode, payload, stdout="", code=0):
+        spec = {"mode": mode, "command": sys.executable, "args": ["-c", self.ECHO_HOOK, stdout, str(code)],
+                "env": {}}
+        encoded = base64.urlsafe_b64encode(json.dumps(spec).encode("utf-8")).decode("ascii")
+        result = subprocess.run([sys.executable, str(self.runner), encoded],
+                                input=json.dumps(payload), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return (json.loads(result.stdout) if result.stdout.strip() else None), json.loads(result.stderr)
+
+    def test_tool_input_gets_claude_code_fields(self):
+        # Shape seen in a real Antigravity CLI run (agy 1.2.13)
+        payload = {"conversationId": "c1", "transcriptPath": "/t.jsonl", "workspacePaths": ["/proj"], "stepIdx": 3,
+                   "toolCall": {"name": "replace_file_content", "args": {
+                       "TargetFile": "/proj/a.txt", "TargetContent": "dois", "ReplacementContent": "DOIS",
+                       "AllowMultiple": False, "StartLine": 2, "toolSummary": "Replace in a.txt"}}}
+        _, seen = self.run_echo("pre_tool", payload)
+        self.assertEqual(seen["tool_name"], "Edit")
+        self.assertEqual(seen["tool_input"], {"file_path": "/proj/a.txt", "old_string": "dois",
+                                              "new_string": "DOIS", "replace_all": False})
+        self.assertEqual((seen["session_id"], seen["transcript_path"], seen["cwd"], seen["hook_event_name"]),
+                         ("c1", "/t.jsonl", "/proj", "PreToolUse"))
+        self.assertEqual(seen["toolCall"], payload["toolCall"])
+
+        _, seen = self.run_echo("pre_tool", {"toolCall": {"name": "view_file", "args": {
+            "AbsolutePath": "/a.txt", "StartLine": 5, "EndLine": 9}}})
+        self.assertEqual((seen["tool_name"], seen["tool_input"]),
+                         ("Read", {"file_path": "/a.txt", "offset": 5, "limit": 5}))
+        _, seen = self.run_echo("post_tool", {"toolCall": {"name": "run_command", "args": {
+            "CommandLine": "echo oi", "Cwd": "/proj"}}, "error": "exit status 1"})
+        self.assertEqual((seen["tool_name"], seen["tool_input"], seen["tool_response"]),
+                         ("Bash", {"command": "echo oi"}, {"error": "exit status 1"}))
+        # Tools without confirmed arguments keep the Antigravity name and arguments
+        _, seen = self.run_echo("pre_tool", {"toolCall": {"name": "grep_search", "args": {
+            "Query": "x", "toolAction": "Searching"}}})
+        self.assertEqual((seen["tool_name"], seen["tool_input"]), ("grep_search", {"Query": "x"}))
+
+    def test_stop_block_continues_once_with_stop_hook_active(self):
+        # A typical Claude Code Stop hook: blocks once, then lets the agent stop
+        hook = ("import json, sys; d = json.load(sys.stdin); sys.stderr.write(json.dumps(d)); "
+                "print('' if d['stop_hook_active'] else json.dumps({'decision': 'block', 'reason': 'Run the tests first'}))")
+        spec = {"mode": "stop", "command": sys.executable, "args": ["-c", hook], "env": {}}
+        encoded = base64.urlsafe_b64encode(json.dumps(spec).encode("utf-8")).decode("ascii")
+        payload = json.dumps({"conversationId": "stop-" + uuid.uuid4().hex})
+
+        def stop():
+            r = subprocess.run([sys.executable, str(self.runner), encoded], input=payload, capture_output=True, text=True)
+            return (json.loads(r.stdout) if r.stdout.strip() else None), json.loads(r.stderr)
+
+        output, seen = stop()
+        self.assertEqual(output, {"decision": "continue", "reason": "Run the tests first"})
+        self.assertIs(seen["stop_hook_active"], False)
+        self.assertEqual(seen["hook_event_name"], "Stop")
+        # The next Stop of the same conversation tells the hook it already kept the agent running
+        output, seen = stop()
+        self.assertIsNone(output)
+        self.assertIs(seen["stop_hook_active"], True)
+        output, seen = stop()
+        self.assertIs(seen["stop_hook_active"], False)
+        output, _ = self.run_echo("stop", {"conversationId": "stop-" + uuid.uuid4().hex}, "", code=2)
+        self.assertEqual(output["decision"], "continue")
 
     def test_context_hooks_read_additional_context_and_need_exit_zero(self):
         context = json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "Use pnpm."}})
