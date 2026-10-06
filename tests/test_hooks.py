@@ -184,7 +184,7 @@ class TestHooksConverter(unittest.TestCase):
 
             res, _ = convert_hooks_file(source, Path(tmp_dir) / "out", plugin_name="plug")
             command = json.loads(res.read_text(encoding="utf-8"))["plug-hooks"]["Stop"][0]["command"]
-            self.assertEqual(command, f'bash "{plugin.resolve().as_posix()}/hooks/stop.sh"')
+            self.assertEqual(_decode_wrapped(command), ("stop", f'bash "{plugin.resolve().as_posix()}/hooks/stop.sh"'))
 
     def test_context_helper_runs_once_and_injects_output(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -222,6 +222,101 @@ class TestHooksConverter(unittest.TestCase):
             # With overwrite=True
             res, _ = convert_hooks_file(source_file, dest_dir, overwrite=True)
             self.assertTrue(res.exists())
+
+
+class TestHookRunnerOutput(unittest.TestCase):
+    """The generated runner turns Claude Code hook results into what Antigravity parses."""
+
+    # Hook stand-in: prints argv[1] to stdout and argv[2] to stderr, exits with argv[3]
+    FAKE_HOOK = "import sys; sys.stdout.write(sys.argv[1]); sys.stderr.write(sys.argv[2]); sys.exit(int(sys.argv[3]))"
+
+    @classmethod
+    def setUpClass(cls):
+        cls._tmp = tempfile.TemporaryDirectory()
+        dest = Path(cls._tmp.name)
+        write_hooks_data({"SessionStart": [{"hooks": [{"command": "echo x"}]}]}, dest, "p")
+        cls.runner = dest / "cc2agy_hooks" / "hook_runner.py"
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._tmp.cleanup()
+
+    def run_hook(self, mode, stdout="", stderr="", code=0):
+        spec = {"mode": mode, "command": sys.executable, "args": ["-c", self.FAKE_HOOK, stdout, stderr, str(code)],
+                "env": {}}
+        encoded = base64.urlsafe_b64encode(json.dumps(spec).encode("utf-8")).decode("ascii")
+        result = subprocess.run(
+            [sys.executable, str(self.runner), encoded],
+            input=json.dumps({"invocationNum": 0}), capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return (json.loads(result.stdout) if result.stdout.strip() else None), result.stderr
+
+    def pre_tool(self, output):
+        return self.run_hook("pre_tool", json.dumps(output))[0]
+
+    def test_pre_tool_exit_codes(self):
+        self.assertEqual(self.run_hook("pre_tool", stderr="rm is not allowed", code=2)[0],
+                         {"decision": "deny", "reason": "rm is not allowed"})
+        # Exit 2 blocks even when the JSON allows (Claude Code ignores the JSON then)
+        allow = json.dumps({"hookSpecificOutput": {"permissionDecision": "allow", "permissionDecisionReason": "ok"}})
+        self.assertEqual(self.run_hook("pre_tool", allow, "blocked", 2)[0], {"decision": "deny", "reason": "blocked"})
+        # Other codes are non-blocking errors in Claude Code: the tool runs
+        self.assertIsNone(self.run_hook("pre_tool", "partial output", "boom", 1)[0])
+
+    def test_pre_tool_plain_text_and_invalid_json_make_no_decision(self):
+        self.assertIsNone(self.run_hook("pre_tool", "Checking command...")[0])
+        self.assertIsNone(self.run_hook("pre_tool", "{not json}")[0])
+        self.assertIsNone(self.run_hook("pre_tool", "")[0])
+
+    def test_pre_tool_permission_decisions(self):
+        self.assertEqual(
+            self.pre_tool({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
+                                                  "permissionDecisionReason": "Database writes are not allowed"}}),
+            {"decision": "deny", "reason": "Database writes are not allowed"},
+        )
+        self.assertEqual(
+            self.pre_tool({"hookSpecificOutput": {"permissionDecision": "allow", "permissionDecisionReason": "Safe.",
+                                                  "additionalContext": "Uses the test DB."}}),
+            {"decision": "allow", "reason": "Safe. Uses the test DB."},
+        )
+        self.assertEqual(self.pre_tool({"hookSpecificOutput": {"permissionDecision": "ask"}}), {"decision": "ask"})
+        self.assertIsNone(self.pre_tool({"hookSpecificOutput": {"permissionDecision": "defer"}}))
+        self.assertIsNone(self.pre_tool({"suppressOutput": True}))
+
+    def test_pre_tool_deprecated_fields_and_continue(self):
+        self.assertEqual(self.pre_tool({"decision": "approve"}), {"decision": "allow"})
+        self.assertEqual(self.pre_tool({"decision": "block", "reason": "No."}), {"decision": "deny", "reason": "No."})
+        self.assertEqual(self.pre_tool({"continue": False, "stopReason": "Build failed"}),
+                         {"decision": "deny", "reason": "Build failed"})
+
+    def test_pre_tool_updated_input_asks_instead_of_running_unchanged(self):
+        decision = self.pre_tool({"hookSpecificOutput": {"permissionDecision": "allow",
+                                                         "updatedInput": {"command": "npm run lint"}}})
+        self.assertEqual(decision["decision"], "ask")
+        self.assertIn("cannot apply", decision["reason"])
+        denied = self.pre_tool({"hookSpecificOutput": {"permissionDecision": "deny", "updatedInput": {}}})
+        self.assertEqual(denied, {"decision": "deny"})
+
+    def test_post_tool_and_stop_print_nothing_and_report_what_is_lost(self):
+        output, stderr = self.run_hook("post_tool", json.dumps({"decision": "block", "reason": "Tests must pass"}))
+        self.assertIsNone(output)
+        self.assertIn("block after the tool ran", stderr)
+        output, stderr = self.run_hook(
+            "post_tool", json.dumps({"hookSpecificOutput": {"additionalContext": "Lint passed."}}), code=2)
+        self.assertIsNone(output)
+        self.assertIn("additionalContext", stderr)
+        output, stderr = self.run_hook("stop", json.dumps({"decision": "block", "reason": "Review first"}))
+        self.assertIsNone(output)
+        self.assertIn("keep the agent running", stderr)
+        self.assertEqual(self.run_hook("stop", "done", code=1), (None, ""))
+
+    def test_context_hooks_read_additional_context_and_need_exit_zero(self):
+        context = json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "Use pnpm."}})
+        self.assertEqual(self.run_hook("once", context)[0], {"injectSteps": [{"ephemeralMessage": "Use pnpm."}]})
+        self.assertEqual(self.run_hook("always", json.dumps({"systemMessage": "hi"}))[0], {})
+        self.assertEqual(self.run_hook("once", "plain context")[0], {"injectSteps": [{"ephemeralMessage": "plain context"}]})
+        self.assertEqual(self.run_hook("once", "context", code=1)[0], {})
 
 
 if __name__ == "__main__":

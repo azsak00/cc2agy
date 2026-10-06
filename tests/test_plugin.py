@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import io
 import json
@@ -234,9 +235,8 @@ class TestPluginConverter(unittest.TestCase):
             self.assertEqual(set(events), {"Stop", "PreToolUse", "PostToolUse"})
             self.assertEqual(events["PreToolUse"][0]["matcher"], "run_command")
             self.assertEqual(events["PostToolUse"][0]["matcher"], "write_to_file")
-            self.assertEqual(
-                events["PostToolUse"][0]["hooks"][0]["command"], f'"{plugin_dir.as_posix()}"/scripts/format.sh'
-            )
+            spec = json.loads(base64.urlsafe_b64decode(events["PostToolUse"][0]["hooks"][0]["command"].split()[-1]))
+            self.assertEqual(spec["command"], f'"{plugin_dir.as_posix()}"/scripts/format.sh')
             self.assertEqual(summary["hooks_migrated"], 1)
 
     def test_manifest_commands_map_and_paths_replace_default_folder(self):

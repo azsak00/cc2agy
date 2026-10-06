@@ -105,20 +105,23 @@ class TestHooksWithVariables(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir) / "plug"
             variables = PluginVariables(root=root, values={"api_url": "https://u"}, declared={"api_url"})
-            raw = {"PostToolUse": [{"matcher": "Write", "hooks": [
+            raw = {"PostInvocation": [{"hooks": [
                 {"command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/fmt.js", "${user_config.api_url}", "a b"]},
                 {"command": 'bash "${CLAUDE_PLUGIN_ROOT}/plain.sh"'},
                 {"command": 'bash "$CLAUDE_PROJECT_DIR/check.sh"'},
-            ]}]}
+            ]}], "PostToolUse": [{"matcher": "Write", "hooks": [{"command": 'bash "${CLAUDE_PLUGIN_ROOT}/fmt.sh"'}]}]}
             converted, _ = convert_hooks_data(raw, "p", helper_dir=Path(tmp_dir), variables=variables)
 
-            exec_hook, plain_hook, env_hook = converted["p-hooks"]["PostToolUse"][0]["hooks"]
+            exec_hook, plain_hook, env_hook = converted["p-hooks"]["PostInvocation"]
             spec = _spec(exec_hook["command"])
-            self.assertEqual(spec["command"], "node")
+            self.assertEqual((spec["mode"], spec["command"]), ("plain", "node"))
             self.assertEqual(spec["args"], [f"{root.as_posix()}/fmt.js", "https://u", "a b"])
             self.assertEqual(spec["env"]["CLAUDE_PLUGIN_OPTION_API_URL"], "https://u")
             self.assertEqual(plain_hook["command"], f'bash "{root.as_posix()}/plain.sh"')
             self.assertEqual(_spec(env_hook["command"])["args"], None)
+            # Antigravity parses tool hook output strictly, so tool hooks always run through the runner
+            tool_spec = _spec(converted["p-hooks"]["PostToolUse"][0]["hooks"][0]["command"])
+            self.assertEqual((tool_spec["mode"], tool_spec["command"]), ("post_tool", f'bash "{root.as_posix()}/fmt.sh"'))
 
     def test_scripts_reading_environment_wrap_every_hook(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -132,10 +135,10 @@ class TestHooksWithVariables(unittest.TestCase):
             plugin = _make_plugin(Path(tmp_dir), {"name": "plug"})
             (plugin / "hooks").mkdir()
             script = (
-                "import os, sys; print(sys.argv[1], os.environ['CLAUDE_PROJECT_DIR'], "
-                "os.environ['CLAUDE_PLUGIN_ROOT'] == sys.argv[2]); sys.exit(3)"
+                "import os, sys; sys.stderr.write(' '.join([sys.argv[1], os.environ['CLAUDE_PROJECT_DIR'], "
+                "str(os.environ['CLAUDE_PLUGIN_ROOT'] == sys.argv[2])])); sys.exit(2)"
             )
-            (plugin / "hooks" / "hooks.json").write_text(json.dumps({"hooks": {"Stop": [{"hooks": [
+            (plugin / "hooks" / "hooks.json").write_text(json.dumps({"hooks": {"PreToolUse": [{"hooks": [
                 {"command": sys.executable, "args": ["-c", script, "${CLAUDE_PROJECT_DIR}/x", "${CLAUDE_PLUGIN_ROOT}"]}
             ]}]}}), encoding="utf-8")
 
@@ -143,13 +146,13 @@ class TestHooksWithVariables(unittest.TestCase):
 
             hooks = json.loads((plugin_dir / "hooks.json").read_text(encoding="utf-8"))
             runner = plugin_dir / "cc2agy_hooks" / "hook_runner.py"
-            encoded = hooks["plug-hooks"]["Stop"][0]["command"].split()[-1]
+            encoded = hooks["plug-hooks"]["PreToolUse"][0]["hooks"][0]["command"].split()[-1]
             result = subprocess.run(
                 [sys.executable, str(runner), encoded],
                 input=json.dumps({"workspacePaths": ["/work/space"]}), capture_output=True, text=True,
             )
-            self.assertEqual(result.returncode, 3)
-            self.assertEqual(result.stdout.split(), ["/work/space/x", "/work/space", "True"])
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(json.loads(result.stdout), {"decision": "deny", "reason": "/work/space/x /work/space True"})
 
     def test_runner_keeps_utf8_input_and_output_on_any_code_page(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -162,23 +165,34 @@ class TestHooksWithVariables(unittest.TestCase):
                 "ok = data['Message'] == 'H\\u00e1 a\\u00e7\\u00e3o'; "
                 "sys.stdout.buffer.write(('recebido: H\\u00e1 a\\u00e7\\u00e3o' if ok else 'errado').encode('utf-8'))"
             )
-            (plugin / "hooks" / "hooks.json").write_text(json.dumps({"hooks": {"PreToolUse": [{"hooks": [
-                {"command": sys.executable, "args": ["-c", script]}
-            ]}]}}), encoding="utf-8")
+            deny = (
+                "import json, sys; data = json.loads(sys.stdin.buffer.read().decode('utf-8')); "
+                "ok = data['Message'] == 'H\\u00e1 a\\u00e7\\u00e3o'; "
+                "print(json.dumps({'decision': 'block', 'reason': 'H\\u00e1 a\\u00e7\\u00e3o' if ok else 'errado'}))"
+            )
+            (plugin / "hooks" / "hooks.json").write_text(json.dumps({"hooks": {
+                "PostInvocation": [{"hooks": [{"command": sys.executable, "args": ["-c", script]}]}],
+                "PreToolUse": [{"hooks": [{"command": sys.executable, "args": ["-c", deny]}]}],
+            }}), encoding="utf-8")
 
             plugin_dir, _ = convert_plugin(plugin, Path(tmp_dir) / "out", overwrite=True)
 
-            hooks = json.loads((plugin_dir / "hooks.json").read_text(encoding="utf-8"))
-            encoded = hooks["plug-hooks"]["PreToolUse"][0]["hooks"][0]["command"].split()[-1]
+            hooks = json.loads((plugin_dir / "hooks.json").read_text(encoding="utf-8"))["plug-hooks"]
             # Windows runs the runner with a legacy code page (cp1252 here); force it everywhere
             env = dict(os.environ, PYTHONIOENCODING="cp1252", PYTHONUTF8="0")
-            result = subprocess.run(
-                [sys.executable, str(plugin_dir / "cc2agy_hooks" / "hook_runner.py"), encoded],
-                input=json.dumps({"Message": "Há ação"}, ensure_ascii=False).encode("utf-8"),
-                capture_output=True, env=env,
-            )
+
+            def run(command):
+                return subprocess.run(
+                    [sys.executable, str(plugin_dir / "cc2agy_hooks" / "hook_runner.py"), command.split()[-1]],
+                    input=json.dumps({"Message": "Há ação"}, ensure_ascii=False).encode("utf-8"),
+                    capture_output=True, env=env,
+                )
+
+            result = run(hooks["PostInvocation"][0]["command"])
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout, "recebido: Há ação".encode("utf-8"))
+            result = run(hooks["PreToolUse"][0]["hooks"][0]["command"])
+            self.assertEqual(json.loads(result.stdout), {"decision": "deny", "reason": "Há ação"})
 
 
 class TestPluginWithVariables(unittest.TestCase):
