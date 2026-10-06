@@ -93,6 +93,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Convert only lifecycle hooks configurations."
     )
+    convert_parser.add_argument(
+        "--user-config",
+        action="append",
+        default=[],
+        metavar="KEY=VALUE",
+        help="Value for a plugin.json userConfig key (repeatable). Antigravity cannot prompt for "
+             "these values, so they are written into the converted plugin."
+    )
 
     return parser
 
@@ -102,6 +110,17 @@ def _error_message(exc: Exception) -> str:
     if isinstance(exc, UnicodeDecodeError):
         return "file is not valid UTF-8 text (re-save it with UTF-8 encoding)"
     return str(exc)
+
+
+def _parse_user_config(entries: list[str]) -> dict[str, str]:
+    """Parse repeated KEY=VALUE options; raise ValueError on an entry without '='."""
+    values: dict[str, str] = {}
+    for entry in entries:
+        key, sep, value = entry.partition("=")
+        if not sep or not key.strip():
+            raise ValueError(f"--user-config expects KEY=VALUE, got '{entry}'")
+        values[key.strip()] = value
+    return values
 
 
 def handle_inspect(target: Path) -> int:
@@ -119,7 +138,14 @@ def handle_convert(
     rules_only: bool = False,
     mcp_only: bool = False,
     hooks_only: bool = False,
+    user_config: list[str] | None = None,
 ) -> int:
+    try:
+        user_values = _parse_user_config(user_config or [])
+    except ValueError as e:
+        print(f"[!] {e}", file=sys.stderr)
+        return 1
+
     info = detect_claude_project(target)
     if not info.is_claude_project:
         print(f"[!] No Claude Code resources found at: {target}", file=sys.stderr)
@@ -135,7 +161,7 @@ def handle_convert(
 
     if is_plugin_conversion and target.is_dir():
         try:
-            plugin_path, p_summary = convert_plugin(target, dest, overwrite=overwrite)
+            plugin_path, p_summary = convert_plugin(target, dest, overwrite=overwrite, user_config=user_values)
             print(f"  [+] Full Plugin packaged: {p_summary['plugin_name']} -> {plugin_path}")
             print(f"      - Manifest: plugin.json")
             print(f"      - Skills/Commands: {p_summary['skills_migrated']}")
@@ -155,6 +181,9 @@ def handle_convert(
         except Exception as e:
             print(f"  [-] Plugin conversion failed: {e}", file=sys.stderr)
             return 1
+
+    if user_values:
+        print("      [!] Warning: --user-config only applies to plugin conversion; ignored.")
 
     do_skills = skills_only if any_filter else True
     do_rules = rules_only if any_filter else True
@@ -371,6 +400,7 @@ def main(args: list[str] | None = None) -> int:
             rules_only=parsed_args.rules_only,
             mcp_only=parsed_args.mcp_only,
             hooks_only=parsed_args.hooks_only,
+            user_config=parsed_args.user_config,
         )
 
     return 0

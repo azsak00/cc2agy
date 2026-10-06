@@ -21,6 +21,14 @@ from cc2agy.converters.hooks import write_hooks_data
 from cc2agy.converters.mcp import extract_servers_dict, write_mcp_data
 from cc2agy.converters.rules import convert_rules_file
 from cc2agy.converters.skills import migrate_skills_directory
+from cc2agy.converters.variables import (
+    DATA_DIR_NAME,
+    VARIABLE_MARKERS,
+    PluginVariables,
+    resolve_user_config,
+    scripts_read_environment,
+    substitute,
+)
 from cc2agy.detector import CLAUDE_PLUGIN_DIR, _find_case_insensitive
 
 
@@ -36,16 +44,24 @@ AUXILIARY_DIRS = {
 }
 
 
-def sanitize_skill_content(content: str, plugin_root: Optional[Path] = None) -> str:
-    """Replace ${CLAUDE_PLUGIN_ROOT} references in SKILL.md.
+def sanitize_skill_content(
+    content: str,
+    plugin_root: Optional[Path] = None,
+    variables: Optional[PluginVariables] = None,
+    warnings: Optional[List[str]] = None,
+) -> str:
+    """Replace Claude Code plugin variables in skill, command or agent content.
 
-    With plugin_root, the variable becomes that absolute folder (forward slashes): paths in a
-    skill are followed by the agent from wherever it runs commands, which Antigravity does not
-    tie to the skill folder. Without plugin_root, the legacy relative form (../..) is kept,
-    since skills reside in skills/<skill_name>/SKILL.md.
+    With variables, every variable is resolved (see variables.substitute, 'markdown').
+    Otherwise only ${CLAUDE_PLUGIN_ROOT} is replaced: with plugin_root, by that absolute
+    folder (forward slashes), since paths in a skill are followed by the agent from wherever
+    it runs commands, which Antigravity does not tie to the skill folder; without it, by the
+    legacy relative form (../..), since skills reside in skills/<skill_name>/SKILL.md.
     """
     if not content:
         return content
+    if variables is not None:
+        return substitute(content, variables, "markdown", warnings if warnings is not None else [])
     root = plugin_root.as_posix() if plugin_root is not None else "../.."
     return re.sub(r"\$\{?CLAUDE_PLUGIN_ROOT\}?", lambda _: root, content)
 
@@ -181,8 +197,12 @@ def convert_plugin(
     dest_dir: Path,
     overwrite: bool = False,
     as_subfolder: bool = True,
+    user_config: Optional[Dict[str, str]] = None,
 ) -> Tuple[Path, Dict[str, Any]]:
     """Convert an entire Claude Code plugin to canonical Antigravity plugin structure.
+
+    user_config: values for plugin.json userConfig keys (Antigravity cannot prompt for them);
+    a key without a value falls back to its declared default.
 
     Resulting Antigravity structure:
     plugins/<plugin_name>/
@@ -249,13 +269,28 @@ def convert_plugin(
         "warnings": [],
     }
 
-    # 3. Write canonical Antigravity plugin.json
+    warnings: List[str] = summary["warnings"]
+
+    # What ${CLAUDE_PLUGIN_ROOT}, ${CLAUDE_PLUGIN_DATA}, ${CLAUDE_PROJECT_DIR} and
+    # ${user_config.KEY} become in this plugin
+    values, sensitive, declared = resolve_user_config(manifest_data.get("userConfig"), user_config or {}, warnings)
+    variables = PluginVariables(
+        root=target_plugin_dir,
+        data_dir=target_plugin_dir / DATA_DIR_NAME,
+        values=values,
+        sensitive=sensitive,
+        declared=declared,
+        plugin=True,
+        scripts_read_env=scripts_read_environment(source_dir),
+    )
+
+    # 3. Write canonical Antigravity plugin.json. Its schema allows only name and description
+    # ("additionalProperties": false), so version, author and the rest are not carried over.
     canonical_manifest: Dict[str, Any] = {
         "name": plugin_name,
     }
-    for field_name in ["description", "version", "author", "keywords", "homepage", "repository", "license"]:
-        if field_name in manifest_data:
-            canonical_manifest[field_name] = manifest_data[field_name]
+    if isinstance(manifest_data.get("description"), str):
+        canonical_manifest["description"] = manifest_data["description"]
 
     with open(target_plugin_manifest, "w", encoding="utf-8") as f:
         json.dump(canonical_manifest, f, indent=2, ensure_ascii=False)
@@ -265,8 +300,6 @@ def convert_plugin(
     # 4. Migrate Skills & Commands into skills/
     skills_dest = target_plugin_dir / "skills"
     skills_dest.mkdir(parents=True, exist_ok=True)
-
-    warnings: List[str] = summary["warnings"]
 
     # Migrate modular skills first (prioritize rich, multi-file modular skill definitions).
     # plugin.json "skills" adds directories to the default skills/ scan.
@@ -310,13 +343,13 @@ def convert_plugin(
             )
             summary["skills_migrated"] += len(cmd_results)
 
-    # Sanitize ${CLAUDE_PLUGIN_ROOT} in all SKILL.md files
+    # Resolve plugin variables and userConfig in all SKILL.md files
     for skill_file in skills_dest.rglob("*.md"):
         if skill_file.is_file() and skill_file.name.lower() == "skill.md":
             try:
                 content = skill_file.read_text(encoding="utf-8", errors="ignore")
-                if "CLAUDE_PLUGIN_ROOT" in content:
-                    updated = sanitize_skill_content(content, target_plugin_dir)
+                if any(marker in content for marker in VARIABLE_MARKERS):
+                    updated = sanitize_skill_content(content, variables=variables, warnings=warnings)
                     skill_file.write_text(updated, encoding="utf-8")
             except Exception as e:
                 summary["warnings"].append(f"Could not sanitize skill {skill_file.name}: {e}")
@@ -366,7 +399,9 @@ def convert_plugin(
                 mcp_sources += 1
     if mcp_sources:
         try:
-            res, w = write_mcp_data({"mcpServers": mcp_servers}, target_plugin_dir, overwrite=overwrite)
+            res, w = write_mcp_data(
+                {"mcpServers": mcp_servers}, target_plugin_dir, overwrite=overwrite, variables=variables
+            )
             summary["mcp_migrated"] += 1
             warnings.extend(w)
         except FileExistsError:
@@ -402,6 +437,7 @@ def convert_plugin(
                 target_plugin_dir,
                 plugin_name=plugin_name,
                 overwrite=overwrite,
+                variables=variables,
             )
             summary["hooks_migrated"] += 1
             warnings.extend(w)
@@ -437,8 +473,10 @@ def convert_plugin(
             )
     for agent_file in agent_files:
         content = agent_file.read_text(encoding="utf-8")
-        if "CLAUDE_PLUGIN_ROOT" in content:
-            agent_file.write_text(sanitize_skill_content(content, target_plugin_dir), encoding="utf-8")
+        if any(marker in content for marker in VARIABLE_MARKERS):
+            agent_file.write_text(
+                sanitize_skill_content(content, variables=variables, warnings=warnings), encoding="utf-8"
+            )
     summary["agents_migrated"] = len(agent_files)
 
     # 9. Copy auxiliary directories (scripts, templates, espec, etc.)

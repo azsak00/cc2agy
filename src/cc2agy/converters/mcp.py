@@ -17,7 +17,9 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+from cc2agy.converters.variables import PluginVariables, standalone_variables, substitute
 
 # Header names that usually carry credentials
 SECRET_HEADER_HINTS = ("authorization", "key", "token", "secret", "password")
@@ -48,8 +50,14 @@ def extract_servers_dict(raw_data: Any) -> Dict[str, Any]:
     return {}
 
 
-def normalize_server_entry(server_id: str, raw_config: Dict[str, Any]) -> Tuple[Dict[str, Any], List[str]]:
+def normalize_server_entry(
+    server_id: str, raw_config: Dict[str, Any], variables: Optional[PluginVariables] = None
+) -> Tuple[Dict[str, Any], List[str]]:
     """Normalize a single server definition to Antigravity canonical schema.
+
+    With variables, Claude Code plugin variables and ${user_config.KEY} are resolved in
+    command, args, env, url and headers, and a plugin's stdio servers receive
+    CLAUDE_PLUGIN_ROOT and CLAUDE_PLUGIN_DATA in env, as Claude Code exports them.
 
     Returns:
         Tuple of (normalized_config_dict, warnings_list).
@@ -61,18 +69,22 @@ def normalize_server_entry(server_id: str, raw_config: Dict[str, Any]) -> Tuple[
         warnings.append(f"Server '{server_id}' configuration is not an object. Skipped.")
         return {}, warnings
 
+    def resolve(value: Any) -> str:
+        text = str(value)
+        return substitute(text, variables, "mcp", warnings) if variables is not None else text
+
     # 1. Detect SSE transport
     server_url = raw_config.get("serverUrl") or raw_config.get("url") or raw_config.get("endpoint")
     if server_url and isinstance(server_url, str):
         if not (server_url.startswith("http://") or server_url.startswith("https://")):
             warnings.append(f"Server '{server_id}' SSE url '{server_url}' does not start with http:// or https://.")
-        normalized["serverUrl"] = server_url
+        normalized["serverUrl"] = resolve(server_url)
 
         # Authentication headers (Antigravity documents 'headers' for remote servers)
         headers = raw_config.get("headers")
         if headers is not None:
             if isinstance(headers, dict):
-                normalized["headers"] = {str(k): str(v) for k, v in headers.items()}
+                normalized["headers"] = {str(k): resolve(v) for k, v in headers.items()}
                 for k, v in normalized["headers"].items():
                     if "${" in v:
                         warnings.append(
@@ -102,19 +114,19 @@ def normalize_server_entry(server_id: str, raw_config: Dict[str, Any]) -> Tuple[
     # 2. Detect Stdio transport
     command = raw_config.get("command")
     if command:
-        normalized["command"] = str(command).strip()
+        normalized["command"] = resolve(command).strip()
 
         args = raw_config.get("args")
         if args is not None:
             if isinstance(args, list):
-                normalized["args"] = [str(arg) for arg in args]
+                normalized["args"] = [resolve(arg) for arg in args]
             else:
                 warnings.append(f"Server '{server_id}' 'args' must be a list of strings.")
 
         env = raw_config.get("env")
         if env is not None:
             if isinstance(env, dict):
-                normalized["env"] = {str(k): str(v) for k, v in env.items()}
+                normalized["env"] = {str(k): resolve(v) for k, v in env.items()}
                 # Check for plaintext credentials
                 for k, v in env.items():
                     val = str(v)
@@ -127,6 +139,13 @@ def normalize_server_entry(server_id: str, raw_config: Dict[str, Any]) -> Tuple[
             else:
                 warnings.append(f"Server '{server_id}' 'env' must be a dictionary.")
 
+        if variables is not None and variables.plugin:
+            plugin_env = normalized.setdefault("env", {})
+            plugin_env.setdefault("CLAUDE_PLUGIN_ROOT", variables.root.as_posix())
+            data = variables.data_path()
+            if data is not None:
+                plugin_env.setdefault("CLAUDE_PLUGIN_DATA", data)
+
     # Validation: must have either command or serverUrl
     if "command" not in normalized and "serverUrl" not in normalized:
         warnings.append(f"Server '{server_id}' specifies neither 'command' (stdio) nor 'serverUrl' (sse).")
@@ -135,7 +154,9 @@ def normalize_server_entry(server_id: str, raw_config: Dict[str, Any]) -> Tuple[
     return normalized, warnings
 
 
-def convert_mcp_config(raw_data: Any) -> Tuple[Dict[str, Any], List[str]]:
+def convert_mcp_config(
+    raw_data: Any, variables: Optional[PluginVariables] = None
+) -> Tuple[Dict[str, Any], List[str]]:
     """Convert raw Claude Code MCP data into canonical Antigravity mcp_config structure."""
     servers_dict = extract_servers_dict(raw_data)
     if not servers_dict:
@@ -145,7 +166,7 @@ def convert_mcp_config(raw_data: Any) -> Tuple[Dict[str, Any], List[str]]:
     all_warnings: List[str] = []
 
     for server_id, server_cfg in servers_dict.items():
-        clean_cfg, warnings = normalize_server_entry(server_id, server_cfg)
+        clean_cfg, warnings = normalize_server_entry(server_id, server_cfg, variables)
         all_warnings.extend(warnings)
         if clean_cfg:
             normalized_servers[server_id] = clean_cfg
@@ -184,17 +205,21 @@ def convert_mcp_file(
     except json.JSONDecodeError as e:
         raise ValueError(f"Failed to parse source MCP file as JSON: {e}") from e
 
-    return write_mcp_data(raw_data, dest_dir, custom_filename=custom_filename, overwrite=overwrite)
+    return write_mcp_data(
+        raw_data, dest_dir, custom_filename=custom_filename, overwrite=overwrite,
+        variables=standalone_variables(source_file, dest_dir),
+    )
 
 
 def write_mcp_data(
     raw_data: Any,
     dest_dir: Path,
     custom_filename: str = "mcp_config.json",
-    overwrite: bool = False
+    overwrite: bool = False,
+    variables: Optional[PluginVariables] = None,
 ) -> Tuple[Path, List[str]]:
     """Convert already-loaded Claude Code MCP data and write it as an Antigravity mcp_config.json."""
-    config, warnings = convert_mcp_config(raw_data)
+    config, warnings = convert_mcp_config(raw_data, variables)
 
     dest_dir.mkdir(parents=True, exist_ok=True)
     target_file = dest_dir / custom_filename

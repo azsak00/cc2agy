@@ -19,10 +19,15 @@ from cc2agy.converters.hooks import (
 )
 
 
+def _decode_spec(command: str) -> dict:
+    """Return the JSON spec from a hook-runner command."""
+    return json.loads(base64.urlsafe_b64decode(command.split()[-1]).decode("utf-8"))
+
+
 def _decode_wrapped(command: str):
-    """Return (mode, original command) from a context-helper hook command."""
-    mode, encoded = command.split()[-2:]
-    return mode, base64.urlsafe_b64decode(encoded).decode("utf-8")
+    """Return (mode, original command) from a hook-runner command."""
+    spec = _decode_spec(command)
+    return spec["mode"], spec["command"]
 
 
 class TestHooksConverter(unittest.TestCase):
@@ -123,7 +128,7 @@ class TestHooksConverter(unittest.TestCase):
             # SessionStart runs through the generated context helper, once per conversation
             command = saved_data["demo-hooks"]["PreInvocation"][0]["command"]
             self.assertEqual(_decode_wrapped(command), ("once", "python test.py"))
-            self.assertTrue((dest_dir / "cc2agy_hooks" / "context_hook.py").exists())
+            self.assertTrue((dest_dir / "cc2agy_hooks" / "hook_runner.py").exists())
 
     def test_sanitize_hook_command_absolute_root(self):
         root = Path(tempfile.gettempdir()) / "my plugin"
@@ -185,12 +190,13 @@ class TestHooksConverter(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             dest = Path(tmp_dir) / "out"
             write_hooks_data({"SessionStart": [{"hooks": [{"command": "echo ctx"}]}]}, dest, "p")
-            helper = dest / "cc2agy_hooks" / "context_hook.py"
-            encoded = base64.urlsafe_b64encode(b"echo ctx").decode("ascii")
+            helper = dest / "cc2agy_hooks" / "hook_runner.py"
+            spec = {"mode": "once", "command": "echo ctx", "args": None, "env": {}}
+            encoded = base64.urlsafe_b64encode(json.dumps(spec).encode("utf-8")).decode("ascii")
 
             def run(invocation_num):
                 result = subprocess.run(
-                    [sys.executable, str(helper), "once", encoded],
+                    [sys.executable, str(helper), encoded],
                     input=json.dumps({"invocationNum": invocation_num}),
                     capture_output=True, text=True, check=True,
                 )
