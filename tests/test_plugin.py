@@ -328,6 +328,19 @@ class TestPluginConverter(unittest.TestCase):
             self.assertEqual(summary["skills_migrated"], 2)
             self.assertTrue(any("commit-2" in w for w in summary["warnings"]))
 
+    def test_command_frontmatter_name_is_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            plugin = self._make_plugin(tmp_path, {"name": "plug", "commands": ["./extras/ship.md"]})
+            (plugin / "extras").mkdir()
+            (plugin / "extras" / "ship.md").write_text("---\nname: deploy\n---\nShip it", encoding="utf-8")
+
+            plugin_dir, summary = convert_plugin(plugin, tmp_path / "out", overwrite=True)
+
+            self.assertTrue((plugin_dir / "skills" / "ship" / "SKILL.md").exists())
+            self.assertFalse((plugin_dir / "skills" / "deploy").exists())
+            self.assertTrue(any("declares name 'deploy'" in w for w in summary["warnings"]))
+
     def test_cli_convert_plugin_autodetect(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)

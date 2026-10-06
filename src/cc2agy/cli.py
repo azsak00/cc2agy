@@ -7,7 +7,8 @@ import sys
 from pathlib import Path
 
 from cc2agy import __version__
-from cc2agy.converters.commands import convert_command_file, convert_commands_directory
+from cc2agy.converters.agents import convert_agents_directory
+from cc2agy.converters.commands import command_skill_name, convert_command_file, convert_commands_directory
 from cc2agy.converters.hooks import convert_hooks_file
 from cc2agy.converters.mcp import convert_mcp_file
 from cc2agy.converters.plugin import convert_plugin
@@ -141,6 +142,7 @@ def handle_convert(
             print(f"      - Rules: {p_summary['rules_migrated']}")
             print(f"      - MCP configs: {p_summary['mcp_migrated']}")
             print(f"      - Lifecycle Hooks: {p_summary['hooks_migrated']}")
+            print(f"      - Subagents: {p_summary['agents_migrated']}")
             if p_summary["auxiliary_dirs_copied"]:
                 print(f"      - Auxiliary dirs: {', '.join(p_summary['auxiliary_dirs_copied'])}")
             for w in p_summary["warnings"]:
@@ -163,6 +165,7 @@ def handle_convert(
     converted_rules = 0
     converted_mcp = 0
     converted_hooks = 0
+    converted_agents = 0
     failures = 0
 
     def report_failure(what: str, source: Path, exc: Exception) -> None:
@@ -217,8 +220,12 @@ def handle_convert(
                 skills_dest = dest if dest.name == "skills" else dest / "skills"
                 skills_dest.mkdir(parents=True, exist_ok=True)
                 try:
+                    name_warnings: list[str] = []
+                    command_skill_name(info.command_files[0], warnings=name_warnings)
                     res = convert_command_file(info.command_files[0], skills_dest, overwrite=overwrite)
                     print(f"  [+] Skill generated: {res.parent.name} -> {res}")
+                    for w in name_warnings:
+                        print(f"      [!] Warning: {w}")
                     converted_skills += 1
                 except FileExistsError as e:
                     print(f"  [!] Skipped existing skill (use --overwrite to replace): {e}", file=sys.stderr)
@@ -314,9 +321,28 @@ def handle_convert(
             except (ValueError, OSError) as e:
                 report_failure("hooks file", info.hooks_file, e)
 
+        # Convert subagents to agents/<name>.md (project rules: name comes from frontmatter only)
+        if not any_filter and info.has_agents:
+            agents_dest = dest if dest.name == "agents" else dest / "agents"
+            agent_claimed: dict[str, str] = {}
+            for a_dir in info.agents_dirs:
+                agent_failures: list[tuple[Path, Exception]] = []
+                agent_warnings: list[str] = []
+                results = convert_agents_directory(
+                    a_dir, agents_dest, agent_claimed, agent_warnings, overwrite=overwrite, failures=agent_failures
+                )
+                for res in results:
+                    print(f"  [+] Subagent generated: {res.stem} -> {res}")
+                    converted_agents += 1
+                for w in agent_warnings:
+                    print(f"      [!] Warning: {w}")
+                for src, exc in agent_failures:
+                    report_failure("subagent", src, exc)
+
     counts = (
         f"{converted_skills} skill(s), {converted_rules} rule(s), "
-        f"{converted_mcp} MCP config(s), {converted_hooks} hooks config(s) generated"
+        f"{converted_mcp} MCP config(s), {converted_hooks} hooks config(s), "
+        f"{converted_agents} subagent(s) generated"
     )
     if failures:
         print(f"\n[!] Conversion finished with {failures} error(s): {counts}.", file=sys.stderr)

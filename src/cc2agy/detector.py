@@ -48,6 +48,8 @@ class ClaudeProjectInfo:
     mcp_file: Optional[Path] = None
     plugin_manifest: Optional[Path] = None
     hooks_file: Optional[Path] = None
+    agents_dirs: List[Path] = field(default_factory=list)
+    agent_files: List[Path] = field(default_factory=list)
     auxiliary_dirs: List[Path] = field(default_factory=list)
 
     @property
@@ -71,6 +73,10 @@ class ClaudeProjectInfo:
         return self.hooks_file is not None and self.hooks_file.exists()
 
     @property
+    def has_agents(self) -> bool:
+        return bool(self.agent_files)
+
+    @property
     def is_plugin(self) -> bool:
         return self.plugin_manifest is not None and self.plugin_manifest.exists()
 
@@ -82,6 +88,7 @@ class ClaudeProjectInfo:
             or self.has_mcp
             or self.has_skills
             or self.has_hooks
+            or self.has_agents
             or self.is_plugin
         )
 
@@ -140,6 +147,10 @@ class ClaudeProjectInfo:
 
         if self.has_hooks:
             lines.append(f"    - Lifecycle Hooks at: {self.hooks_file.name}")
+
+        if self.has_agents:
+            dirs_str = ", ".join(str(d.name) for d in self.agents_dirs)
+            lines.append(f"    - Subagents ({len(self.agent_files)} files in [{dirs_str}])")
 
         if self.auxiliary_dirs:
             aux_str = ", ".join(d.name for d in self.auxiliary_dirs)
@@ -241,13 +252,20 @@ def detect_claude_project(target_path: Path) -> ClaudeProjectInfo:
             info.hooks_file = found_hooks
             break
 
-    # 7. Discover auxiliary plugin directories
+    # 7. Discover subagents (plugin agents/ and project .claude/agents/, scanned recursively)
+    for a_dir in (target_path / "agents", target_path / ".claude" / "agents"):
+        if a_dir.is_dir():
+            files = [f for f in sorted(a_dir.rglob("*.md")) if f.is_file()]
+            if files:
+                info.agents_dirs.append(a_dir)
+                info.agent_files.extend(files)
+
+    # 8. Discover auxiliary plugin directories
     if target_path.is_dir():
         known_aux = {
             "scripts",
             "templates",
             "espec",
-            "agents",
             "hooks",
             "resources",
             "references",

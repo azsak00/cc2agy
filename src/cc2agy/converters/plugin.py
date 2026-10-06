@@ -8,6 +8,7 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from cc2agy.converters.agents import convert_agent_file, convert_agents_directory
 from cc2agy.converters.commands import (
     claim_skill_name,
     command_skill_name,
@@ -27,7 +28,6 @@ AUXILIARY_DIRS = {
     "scripts",
     "templates",
     "espec",
-    "agents",
     "hooks",
     "resources",
     "references",
@@ -164,7 +164,7 @@ def _convert_declared_commands(
                 )
             )
         else:
-            skill_name = command_skill_name(path)
+            skill_name = command_skill_name(path, warnings=warnings)
             if skill_name in skip_names:
                 continue
             skill_name = claim_skill_name(skill_name, str(path), claimed, skip_names, warnings)
@@ -193,6 +193,8 @@ def convert_plugin(
     │   └── AGENTS.md
     ├── skills/           (optional)
     │   └── <skill>/SKILL.md
+    ├── agents/           (optional)
+    │   └── <agent>.md
     ├── scripts/          (preserved)
     ├── templates/        (preserved)
     └── ...               (auxiliary dirs preserved)
@@ -242,6 +244,7 @@ def convert_plugin(
         "rules_migrated": 0,
         "mcp_migrated": 0,
         "hooks_migrated": 0,
+        "agents_migrated": 0,
         "auxiliary_dirs_copied": [],
         "warnings": [],
     }
@@ -405,7 +408,40 @@ def convert_plugin(
         except FileExistsError:
             warnings.append("Hooks file already exists in plugin; skipped.")
 
-    # 8. Copy auxiliary directories (scripts, templates, espec, agents, etc.)
+    # 8. Convert subagents into agents/. plugin.json "agents" (.md files only) replaces the
+    # default agents/ scan, and its files load without subfolder names.
+    agents_dest = target_plugin_dir / "agents"
+    agent_claimed: Dict[str, str] = {}
+    agent_files: List[Path] = []
+    if "agents" in manifest_data:
+        for raw in _manifest_entries(manifest_data["agents"]):
+            path = _resolve_component_path(source_dir, raw, "agents", warnings)
+            if path is None:
+                continue
+            if path.is_file() and path.suffix.lower() == ".md":
+                try:
+                    result = convert_agent_file(
+                        path, agents_dest, agent_claimed, warnings, plugin_name=plugin_name, overwrite=overwrite
+                    )
+                except FileExistsError:
+                    result = None
+                if result is not None:
+                    agent_files.append(result)
+            else:
+                warnings.append(f"plugin.json 'agents': '{raw}' is not a .md file; skipped.")
+    else:
+        source_agents_dir = source_dir / "agents"
+        if source_agents_dir.is_dir():
+            agent_files = convert_agents_directory(
+                source_agents_dir, agents_dest, agent_claimed, warnings, plugin_name=plugin_name, overwrite=overwrite
+            )
+    for agent_file in agent_files:
+        content = agent_file.read_text(encoding="utf-8")
+        if "CLAUDE_PLUGIN_ROOT" in content:
+            agent_file.write_text(sanitize_skill_content(content, target_plugin_dir), encoding="utf-8")
+    summary["agents_migrated"] = len(agent_files)
+
+    # 9. Copy auxiliary directories (scripts, templates, espec, etc.)
     for item in sorted(source_dir.iterdir()):
         if not item.is_dir():
             continue
@@ -432,7 +468,7 @@ def convert_plugin(
             except Exception as e:
                 summary["warnings"].append(f"Failed to copy auxiliary directory '{item.name}': {e}")
 
-    # 9. Copy auxiliary root documentation / license files
+    # 10. Copy auxiliary root documentation / license files
     auxiliary_files = ["README.md", "LICENSE", "LICENSE.md", "CHANGELOG.md"]
     for aux_name in auxiliary_files:
         aux_src = _find_case_insensitive(source_dir, aux_name)

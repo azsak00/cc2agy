@@ -1,5 +1,6 @@
 """Converters for Claude Code components to Google Antigravity standards."""
 
+from .agents import convert_agent_file, convert_agents_directory
 from .commands import (
     convert_command_file,
     convert_commands_directory,
@@ -12,6 +13,8 @@ from .rules import clean_rules_content, convert_rules_file
 from .skills import migrate_skill_folder, migrate_skills_directory
 
 __all__ = [
+    "convert_agent_file",
+    "convert_agents_directory",
     "convert_command_file",
     "convert_commands_directory",
     "sanitize_skill_name",

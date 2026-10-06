@@ -280,28 +280,41 @@ class TestCLI(unittest.TestCase):
             code = main(["convert", str(root), "--dest", str(out_dir), "--overwrite"])
         return code, stdout.getvalue() + stderr.getvalue()
 
-    def test_cli_duplicate_frontmatter_names_keep_both_with_warning(self):
-        """Two commands declaring the same name: neither may vanish or overwrite the other."""
+    def test_cli_command_frontmatter_name_is_ignored_with_warning(self):
+        """Claude Code ignores name: in commands, so two commands declaring the same name keep their file names."""
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             cmd_dir = root / "commands"
             cmd_dir.mkdir()
             (cmd_dir / "a.md").write_text("---\nname: deploy\n---\nFROM A", encoding="utf-8")
             (cmd_dir / "b.md").write_text("---\nname: deploy\n---\nFROM B", encoding="utf-8")
+            (cmd_dir / "same.md").write_text("---\nname: same\n---\nSAME", encoding="utf-8")
             out_dir = root / "out"
 
-            for _ in range(2):  # re-running must give the same names, not deploy-3
-                code, output = self._convert(root, out_dir)
+            code, output = self._convert(root, out_dir)
 
             self.assertEqual(code, 0)
             skills = out_dir / "skills"
-            self.assertIn("FROM A", (skills / "deploy" / "SKILL.md").read_text(encoding="utf-8"))
-            second = (skills / "deploy-2" / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn("FROM A", (skills / "a" / "SKILL.md").read_text(encoding="utf-8"))
+            second = (skills / "b" / "SKILL.md").read_text(encoding="utf-8")
             self.assertIn("FROM B", second)
-            self.assertIn("name: deploy-2", second)
-            self.assertFalse((skills / "deploy-3").exists())
-            self.assertIn("b.md", output)
-            self.assertIn("deploy-2", output)
+            self.assertIn("name: b", second)
+            self.assertFalse((skills / "deploy").exists())
+            self.assertIn("declares name 'deploy'", output)
+            self.assertNotIn("declares name 'same'", output)
+
+    def test_cli_single_command_file_ignores_frontmatter_name(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            source = root / "review.md"
+            source.write_text("---\nname: other\n---\nBody", encoding="utf-8")
+            out_dir = root / "out"
+
+            code, output = self._convert(source, out_dir)
+
+            self.assertEqual(code, 0)
+            self.assertTrue((out_dir / "skills" / "review" / "SKILL.md").exists())
+            self.assertIn("declares name 'other'", output)
 
     def test_cli_same_command_name_in_two_command_folders(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

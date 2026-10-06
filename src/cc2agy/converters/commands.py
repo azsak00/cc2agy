@@ -161,9 +161,13 @@ def adapt_prompt_arguments(body: str) -> str:
     return protected
 
 
-def _resolve_skill_name(meta: Dict[str, str], default_name: str, custom_name: Optional[str] = None) -> str:
-    """Determine the canonical skill name for a command."""
-    return sanitize_skill_name(custom_name or meta.get("name") or default_name)
+def _resolve_skill_name(default_name: str, custom_name: Optional[str] = None) -> str:
+    """Determine the canonical skill name for a command.
+
+    Claude Code ignores `name:` in a command file (only skills read it), so the name comes
+    from the file path or from the plugin.json commands map, never from the frontmatter.
+    """
+    return sanitize_skill_name(custom_name or default_name)
 
 
 def command_default_name(source_file: Path, commands_dir: Optional[Path] = None) -> str:
@@ -180,10 +184,24 @@ def command_default_name(source_file: Path, commands_dir: Optional[Path] = None)
     return source_file.stem
 
 
-def command_skill_name(source_file: Path, default_name: Optional[str] = None) -> str:
-    """Return the skill name a command file converts to (same rule as convert_command_file)."""
-    meta, _ = parse_frontmatter(source_file.read_text(encoding="utf-8"))
-    return _resolve_skill_name(meta, default_name or source_file.stem)
+def command_skill_name(
+    source_file: Path, default_name: Optional[str] = None, warnings: Optional[List[str]] = None
+) -> str:
+    """Return the skill name a command file converts to (same rule as convert_command_file).
+
+    A frontmatter `name:` that differs from it is reported in `warnings`: Claude Code ignores
+    it, and older cc2agy versions used it, so the skill may have changed name.
+    """
+    name = _resolve_skill_name(default_name or source_file.stem)
+    if warnings is not None:
+        meta, _ = parse_frontmatter(source_file.read_text(encoding="utf-8"))
+        declared = meta.get("name")
+        if declared and sanitize_skill_name(declared) != name:
+            warnings.append(
+                f"Command '{source_file}' declares name '{declared}', which Claude Code ignores in "
+                f"commands; converted as '{name}'."
+            )
+    return name
 
 
 def claim_skill_name(
@@ -192,11 +210,12 @@ def claim_skill_name(
     claimed: Dict[str, str],
     reserved: Optional[Set[str]] = None,
     warnings: Optional[List[str]] = None,
+    kind: str = "Command",
 ) -> str:
-    """Reserve a unique skill name for `source` within one conversion run.
+    """Reserve a unique name for `source` within one conversion run.
 
-    The first command keeps `name`; a later one gets name-2, name-3, ... (skipping
-    `reserved` names) and a warning, so no command is dropped or overwritten.
+    The first source keeps `name`; a later one gets name-2, name-3, ... (skipping
+    `reserved` names) and a warning, so nothing is dropped or overwritten.
     """
     unique = name
     suffix = 2
@@ -205,7 +224,7 @@ def claim_skill_name(
         suffix += 1
     if unique != name and warnings is not None:
         warnings.append(
-            f"Command '{source}' resolves to skill name '{name}', already used by '{claimed[name]}'; "
+            f"{kind} '{source}' resolves to name '{name}', already used by '{claimed[name]}'; "
             f"converted as '{unique}'."
         )
     claimed[unique] = source
@@ -246,7 +265,7 @@ def convert_command_text(
     meta, raw_body = parse_frontmatter(raw_content)
 
     # Determine canonical skill name
-    skill_name = _resolve_skill_name(meta, default_name, custom_name)
+    skill_name = _resolve_skill_name(default_name, custom_name)
 
     # Generate description and adapt body
     description = description or extract_description(raw_body, meta, skill_name)
@@ -295,7 +314,8 @@ def convert_commands_directory(
             When omitted, the first error is raised.
         claimed: Skill names already given to commands in this run (name -> source);
             share it across calls so commands in different folders never collide.
-        warnings: When given, a renamed command (name collision) is reported here.
+        warnings: When given, a renamed command (name collision) or an ignored
+            frontmatter `name:` is reported here.
     """
     if not commands_dir.exists() or not commands_dir.is_dir():
         return []
@@ -308,7 +328,7 @@ def convert_commands_directory(
         if md_file.is_file():
             try:
                 default_name = command_default_name(md_file, commands_dir)
-                name = command_skill_name(md_file, default_name)
+                name = command_skill_name(md_file, default_name, warnings)
                 if skip_names and name in skip_names:
                     continue
                 name = claim_skill_name(name, str(md_file), claimed, skip_names, warnings)
