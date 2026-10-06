@@ -2,14 +2,28 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Set
 
 from cc2agy.converters.commands import command_default_name
+from cc2agy.converters.hooks import SETTINGS_FILES
 
 
 CLAUDE_PLUGIN_DIR = ".claude-plugin"
+
+
+def _settings_hook_keys(path: Path) -> Set[str]:
+    """Hook keys ('hooks', 'disableAllHooks') a settings file sets; an unreadable file counts
+    as holding hooks, so the conversion reports its error instead of dropping it."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return {"hooks"}
+    if not isinstance(data, dict):
+        return {"hooks"}
+    return {k for k in ("hooks", "disableAllHooks") if k in data}
 
 
 def _is_claude_plugin_manifest(path: Path) -> bool:
@@ -48,6 +62,7 @@ class ClaudeProjectInfo:
     mcp_file: Optional[Path] = None
     plugin_manifest: Optional[Path] = None
     hooks_file: Optional[Path] = None
+    settings_files: List[Path] = field(default_factory=list)
     agents_dirs: List[Path] = field(default_factory=list)
     agent_files: List[Path] = field(default_factory=list)
     auxiliary_dirs: List[Path] = field(default_factory=list)
@@ -69,8 +84,14 @@ class ClaudeProjectInfo:
         return self.skills_dir is not None and self.skills_dir.exists()
 
     @property
+    def hook_sources(self) -> List[Path]:
+        """hooks.json, then .claude/settings.json and .claude/settings.local.json (precedence order)."""
+        sources = [self.hooks_file] if self.hooks_file is not None and self.hooks_file.exists() else []
+        return sources + [f for f in self.settings_files if f.exists()]
+
+    @property
     def has_hooks(self) -> bool:
-        return self.hooks_file is not None and self.hooks_file.exists()
+        return bool(self.hook_sources)
 
     @property
     def has_agents(self) -> bool:
@@ -146,7 +167,7 @@ class ClaudeProjectInfo:
             lines.append(f"    - Plugin Manifest at: {self.plugin_manifest.name}")
 
         if self.has_hooks:
-            lines.append(f"    - Lifecycle Hooks at: {self.hooks_file.name}")
+            lines.append(f"    - Lifecycle Hooks at: {', '.join(f.name for f in self.hook_sources)}")
 
         if self.has_agents:
             dirs_str = ", ".join(str(d.name) for d in self.agents_dirs)
@@ -180,6 +201,10 @@ def detect_claude_project(target_path: Path) -> ClaudeProjectInfo:
                 info.commands_dirs.append(target_path.parent)
             return info
         elif target_path.suffix.lower() == ".json":
+            if target_path.name.lower() in SETTINGS_FILES:
+                if "hooks" in _settings_hook_keys(target_path):
+                    info.settings_files.append(target_path)
+                return info
             if "mcp" in target_path.name.lower() or "claude" in target_path.name.lower():
                 info.mcp_file = target_path
                 return info
@@ -251,6 +276,19 @@ def detect_claude_project(target_path: Path) -> ClaudeProjectInfo:
         if found_hooks:
             info.hooks_file = found_hooks
             break
+
+    # Project hooks live in .claude/settings.json and .claude/settings.local.json. A file that
+    # only sets disableAllHooks counts when some other source holds hooks.
+    settings_dir = target_path if target_path.name.lower() == ".claude" else target_path / ".claude"
+    settings_found = []
+    for fname in SETTINGS_FILES:
+        found_settings = _find_case_insensitive(settings_dir, fname)
+        if found_settings:
+            keys = _settings_hook_keys(found_settings)
+            if keys:
+                settings_found.append((found_settings, keys))
+    if info.hooks_file or any("hooks" in keys for _, keys in settings_found):
+        info.settings_files = [f for f, _ in settings_found]
 
     # 7. Discover subagents (plugin agents/ and project .claude/agents/, scanned recursively)
     for a_dir in (target_path / "agents", target_path / ".claude" / "agents"):

@@ -14,7 +14,7 @@ from cc2agy.converters.commands import (
     convert_commands_directory,
     sanitize_skill_name,
 )
-from cc2agy.converters.hooks import convert_hooks_file
+from cc2agy.converters.hooks import convert_hooks_files
 from cc2agy.converters.mcp import convert_mcp_file
 from cc2agy.converters.plugin import convert_plugin
 from cc2agy.converters.rules import convert_rules_file
@@ -243,6 +243,23 @@ def handle_convert(
         failures += 1
         print(f"  [-] Failed to convert {what} '{source}': {_error_message(exc)}", file=sys.stderr)
 
+    def convert_hooks() -> None:
+        nonlocal converted_hooks
+        sources = info.hook_sources
+        try:
+            res, warnings = convert_hooks_files(
+                sources, dest, plugin_name=hooks_group, overwrite=overwrite, merge=merge
+            )
+            if res is not None:
+                print(f"  [+] Hooks generated: {res.name} -> {res}")
+                converted_hooks += 1
+            for w in warnings:
+                print(f"      [!] Warning: {w}")
+        except FileExistsError as e:
+            print(f"  [!] Skipped existing hooks file (use --overwrite to replace): {e}", file=sys.stderr)
+        except (ValueError, OSError) as e:
+            report_failure("hooks from", ", ".join(str(s) for s in sources), e)
+
     # 1. Handle single-file target
     if target.is_file():
         # Rules file
@@ -271,21 +288,10 @@ def handle_convert(
                     print(f"  [!] Skipped existing MCP file (use --overwrite to replace): {e}", file=sys.stderr)
                 except (ValueError, OSError) as e:
                     report_failure("MCP file", info.mcp_file, e)
-        # Hooks file
-        elif info.hooks_file:
+        # Hooks file (hooks.json or a settings file)
+        elif info.has_hooks:
             if do_hooks:
-                try:
-                    res, warnings = convert_hooks_file(
-                        info.hooks_file, dest, plugin_name=hooks_group, overwrite=overwrite, merge=merge
-                    )
-                    print(f"  [+] Hooks generated: {res.name} -> {res}")
-                    for w in warnings:
-                        print(f"      [!] Warning: {w}")
-                    converted_hooks += 1
-                except FileExistsError as e:
-                    print(f"  [!] Skipped existing hooks file (use --overwrite to replace): {e}", file=sys.stderr)
-                except (ValueError, OSError) as e:
-                    report_failure("hooks file", info.hooks_file, e)
+                convert_hooks()
         # Command file
         elif info.command_files:
             if do_skills:
@@ -382,20 +388,9 @@ def handle_convert(
             except (ValueError, OSError) as e:
                 report_failure("MCP file", info.mcp_file, e)
 
-        # Convert Hooks to hooks.json
-        if do_hooks and info.has_hooks and info.hooks_file:
-            try:
-                res, warnings = convert_hooks_file(
-                    info.hooks_file, dest, plugin_name=hooks_group, overwrite=overwrite, merge=merge
-                )
-                print(f"  [+] Hooks generated: {res.name} -> {res}")
-                for w in warnings:
-                    print(f"      [!] Warning: {w}")
-                converted_hooks += 1
-            except FileExistsError as e:
-                print(f"  [!] Skipped existing hooks file (use --overwrite to replace): {e}", file=sys.stderr)
-            except (ValueError, OSError) as e:
-                report_failure("hooks file", info.hooks_file, e)
+        # Convert Hooks (hooks.json, .claude/settings.json, .claude/settings.local.json) to hooks.json
+        if do_hooks and info.has_hooks:
+            convert_hooks()
 
         # Convert subagents to agents/<name>.md (project rules: name comes from frontmatter only)
         if not any_filter and info.has_agents:

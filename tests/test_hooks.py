@@ -413,6 +413,20 @@ class TestHookRunnerOutput(unittest.TestCase):
                 helper_dir=Path(tmp_dir))
         self.assertEqual(sum("undocumented Antigravity file" in w for w in warnings), 2)
 
+    def test_hooks_run_in_the_project_folder(self):
+        # Claude Code runs hooks in the session folder; Antigravity ran plugin hooks in the plugin folder
+        hook = "import os; print(os.getcwd())"
+        with tempfile.TemporaryDirectory() as project:
+            for mode in ("plain", "always"):
+                spec = {"mode": mode, "command": sys.executable, "args": ["-c", hook], "env": {}}
+                encoded = base64.urlsafe_b64encode(json.dumps(spec).encode("utf-8")).decode("ascii")
+                result = subprocess.run([sys.executable, str(self.runner), encoded], capture_output=True, text=True,
+                                        input=json.dumps({"workspacePaths": [project]}))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                out = result.stdout.strip()
+                cwd = json.loads(out)["injectSteps"][0]["ephemeralMessage"] if mode == "always" else out
+                self.assertTrue(Path(cwd).samefile(project), (mode, cwd))
+
     def test_context_hooks_read_additional_context_and_need_exit_zero(self):
         context = json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "Use pnpm."}})
         self.assertEqual(self.run_hook("once", context)[0], {"injectSteps": [{"ephemeralMessage": "Use pnpm."}]})
