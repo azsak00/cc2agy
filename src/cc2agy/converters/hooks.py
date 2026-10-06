@@ -61,6 +61,7 @@ The spec holds "mode", "command", "args" (a list for exec form, null for shell f
 The process receives the spec's environment (CLAUDE_PLUGIN_ROOT, CLAUDE_PLUGIN_DATA,
 CLAUDE_PLUGIN_OPTION_<KEY>) plus CLAUDE_PROJECT_DIR, taken from the first Antigravity
 workspace path; ${CLAUDE_PROJECT_DIR} in the command and args is replaced with it.
+Input and output pass through as UTF-8 bytes, whatever the system code page.
 """
 import base64
 import json
@@ -73,9 +74,9 @@ import sys
 def main():
     spec = json.loads(base64.urlsafe_b64decode(sys.argv[1]).decode("utf-8"))
     mode = spec.get("mode", "plain")
-    raw_input = sys.stdin.read()
+    raw_input = sys.stdin.buffer.read()
     try:
-        payload = json.loads(raw_input) if raw_input.strip() else {}
+        payload = json.loads(raw_input.decode("utf-8")) if raw_input.strip() else {}
     except ValueError:
         payload = {}
     if mode == "once" and payload.get("invocationNum", 0) != 0:
@@ -97,17 +98,16 @@ def main():
         result = subprocess.run(
             [command] + [fill(a) for a in args] if args is not None else command,
             shell=args is None, input=raw_input, capture_output=True, env=env,
-            text=True, encoding="utf-8", errors="replace",
         )
     except OSError as e:
         sys.stderr.write(f"cc2agy hook runner: cannot start '{command}': {e}\\n")
         return 1
     if result.stderr:
-        sys.stderr.write(result.stderr)
+        sys.stderr.buffer.write(result.stderr)
     if mode == "plain":
-        sys.stdout.write(result.stdout)
+        sys.stdout.buffer.write(result.stdout)
         return result.returncode
-    output = result.stdout.strip()
+    output = result.stdout.decode("utf-8", errors="replace").strip()
     print(json.dumps({"injectSteps": [{"ephemeralMessage": output}]} if output else {}))
     return 0
 

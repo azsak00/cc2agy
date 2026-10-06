@@ -6,6 +6,7 @@ import base64
 import contextlib
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -149,6 +150,35 @@ class TestHooksWithVariables(unittest.TestCase):
             )
             self.assertEqual(result.returncode, 3)
             self.assertEqual(result.stdout.split(), ["/work/space/x", "/work/space", "True"])
+
+    def test_runner_keeps_utf8_input_and_output_on_any_code_page(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            plugin = _make_plugin(Path(tmp_dir), {"name": "plug"})
+            (plugin / "hooks").mkdir()
+            # The hook checks its input and answers with fixed text: an echo would hide the bug,
+            # since decoding the input and encoding the output with the same code page cancel out
+            script = (
+                "import json, sys; data = json.loads(sys.stdin.buffer.read().decode('utf-8')); "
+                "ok = data['Message'] == 'H\\u00e1 a\\u00e7\\u00e3o'; "
+                "sys.stdout.buffer.write(('recebido: H\\u00e1 a\\u00e7\\u00e3o' if ok else 'errado').encode('utf-8'))"
+            )
+            (plugin / "hooks" / "hooks.json").write_text(json.dumps({"hooks": {"PreToolUse": [{"hooks": [
+                {"command": sys.executable, "args": ["-c", script]}
+            ]}]}}), encoding="utf-8")
+
+            plugin_dir, _ = convert_plugin(plugin, Path(tmp_dir) / "out", overwrite=True)
+
+            hooks = json.loads((plugin_dir / "hooks.json").read_text(encoding="utf-8"))
+            encoded = hooks["plug-hooks"]["PreToolUse"][0]["hooks"][0]["command"].split()[-1]
+            # Windows runs the runner with a legacy code page (cp1252 here); force it everywhere
+            env = dict(os.environ, PYTHONIOENCODING="cp1252", PYTHONUTF8="0")
+            result = subprocess.run(
+                [sys.executable, str(plugin_dir / "cc2agy_hooks" / "hook_runner.py"), encoded],
+                input=json.dumps({"Message": "Há ação"}, ensure_ascii=False).encode("utf-8"),
+                capture_output=True, env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "recebido: Há ação".encode("utf-8"))
 
 
 class TestPluginWithVariables(unittest.TestCase):

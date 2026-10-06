@@ -409,6 +409,52 @@ class TestPluginConverter(unittest.TestCase):
             self.assertIn("bin", summary["auxiliary_dirs_copied"])
             self.assertTrue(any("bin/" in w and "PATH" in w for w in summary["warnings"]))
 
+    def test_every_other_plugin_folder_is_copied(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            plugin = self._make_plugin(tmp_path, {"name": "plug"})
+            files = {
+                "servers/eco_server.py": "print('mcp')",
+                "dist/index.js": "console.log('mcp')",
+                "node_modules/dep/index.js": "module.exports = 1",
+                "commands/go.md": "Go",
+                "agents/helper.md": "---\nname: helper\ndescription: d\n---\nHelp.",
+                "output-styles/terse.md": "Be terse.",
+                "rules/CLAUDE.md": "Rule.",
+                "rules/style.md": "Style guide.",
+                ".git/config": "[core]",
+            }
+            for rel, text in files.items():
+                (plugin / rel).parent.mkdir(parents=True, exist_ok=True)
+                (plugin / rel).write_text(text, encoding="utf-8")
+            (plugin / ".mcp.json").write_text(json.dumps({"mcpServers": {"eco": {
+                "command": "python", "args": ["${CLAUDE_PLUGIN_ROOT}/servers/eco_server.py"]}}}), encoding="utf-8")
+
+            plugin_dir, summary = convert_plugin(plugin, tmp_path / "out", overwrite=True)
+
+            server = json.loads((plugin_dir / "mcp_config.json").read_text(encoding="utf-8"))["mcpServers"]["eco"]
+            self.assertTrue(Path(server["args"][0]).is_file())
+            self.assertTrue((plugin_dir / "dist" / "index.js").is_file())
+            self.assertTrue((plugin_dir / "node_modules" / "dep" / "index.js").is_file())
+            for skipped in ("commands", "output-styles", ".git", ".claude-plugin"):
+                self.assertFalse((plugin_dir / skipped).exists(), skipped)
+            self.assertFalse((plugin_dir / "rules" / "style.md").exists())
+            self.assertTrue(any("rules/ not copied" in w and "style.md" in w for w in summary["warnings"]))
+            self.assertEqual(sorted(summary["auxiliary_dirs_copied"]), ["dist", "node_modules", "servers"])
+
+    def test_destination_inside_plugin_is_not_copied_into_itself(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            plugin = self._make_plugin(Path(tmp_dir), {"name": "plug"})
+            (plugin / "scripts").mkdir()
+            (plugin / "scripts" / "run.sh").write_text("echo ok", encoding="utf-8")
+
+            plugin_dir, summary = convert_plugin(plugin, plugin / "output", overwrite=True)
+
+            self.assertEqual(plugin_dir, (plugin / "output" / "plugins" / "plug").resolve())
+            self.assertTrue((plugin_dir / "scripts" / "run.sh").is_file())
+            self.assertFalse((plugin_dir / "output").exists())
+            self.assertEqual(summary["auxiliary_dirs_copied"], ["scripts"])
+
     def test_cli_convert_plugin_autodetect(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)

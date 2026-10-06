@@ -32,18 +32,6 @@ from cc2agy.converters.variables import (
 from cc2agy.detector import CLAUDE_PLUGIN_DIR, _find_case_insensitive
 
 
-AUXILIARY_DIRS = {
-    "scripts",
-    "templates",
-    "espec",
-    "hooks",
-    "resources",
-    "references",
-    "docs",
-    "context",
-    "bin",
-}
-
 # Claude Code plugin components with no Antigravity counterpart (an Antigravity plugin holds
 # only plugin.json, mcp_config.json, hooks.json, skills/, agents/ and rules/): label, default
 # location under the plugin root, plugin.json keys that declare them, and an extra note.
@@ -57,6 +45,24 @@ UNSUPPORTED_COMPONENTS: List[Tuple[str, Optional[str], Tuple[str, ...], str]] = 
     ("Channels", None, ("channels",), ""),
     ("Dependencies", None, ("dependencies",), " Convert and install the plugins it depends on separately."),
 ]
+
+# Top-level plugin folders that are not copied as is: the components converted above, the
+# folders of components with no equivalent (they are reported instead), and rules/, since
+# Antigravity loads every file in a plugin's rules/ as an active rule. Every other folder
+# (scripts, MCP servers in dist/, src/, lib/ ...) is copied, as Claude Code keeps the whole
+# plugin folder and ${CLAUDE_PLUGIN_ROOT} paths may point anywhere in it.
+NOT_COPIED_DIRS = {
+    ".claude-plugin",
+    ".claude",
+    "skills",
+    "commands",
+    "agents",
+    "rules",
+    "output-styles",
+    "workflows",
+    "themes",
+    "monitors",
+}
 
 
 def sanitize_skill_content(
@@ -254,9 +260,7 @@ def convert_plugin(
     │   └── <skill>/SKILL.md
     ├── agents/           (optional)
     │   └── <agent>.md
-    ├── scripts/          (preserved)
-    ├── templates/        (preserved)
-    └── ...               (auxiliary dirs preserved)
+    └── ...               (every other plugin folder, copied; see NOT_COPIED_DIRS)
     """
     source_dir = source_dir.resolve()
     dest_dir = dest_dir.resolve()
@@ -518,37 +522,47 @@ def convert_plugin(
             )
     summary["agents_migrated"] = len(agent_files)
 
-    # 9. Copy auxiliary directories (scripts, templates, espec, etc.)
+    # 9. Copy the other plugin folders (scripts, MCP servers, templates, bin, etc.)
     for item in sorted(source_dir.iterdir()):
         if not item.is_dir():
             continue
         item_lower = item.name.lower()
-        if item_lower in AUXILIARY_DIRS:
-            dest_aux = target_plugin_dir / item.name
-            try:
-                shutil.copytree(
-                    item,
-                    dest_aux,
-                    dirs_exist_ok=True,
-                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git*"),
+        if item_lower == "rules":
+            extra = [p.name for p in item.iterdir() if p.name.lower() != "claude.md"]
+            if extra:
+                warnings.append(
+                    f"{item.name}/ not copied: Antigravity would load its files as active rules "
+                    f"({', '.join(sorted(extra))})."
                 )
-                # If hooks directory was copied, remove hooks.json inside it to avoid duplicate configuration
-                if item_lower == "hooks":
-                    nested_hooks_json = dest_aux / "hooks.json"
-                    if nested_hooks_json.exists():
-                        try:
-                            nested_hooks_json.unlink()
-                        except OSError:
-                            pass
+            continue
+        # A destination inside the plugin folder (e.g. ./output) must not be copied into itself
+        if item_lower in NOT_COPIED_DIRS or item_lower.startswith(".git") or target_plugin_dir.is_relative_to(item):
+            continue
+        dest_aux = target_plugin_dir / item.name
+        try:
+            shutil.copytree(
+                item,
+                dest_aux,
+                dirs_exist_ok=True,
+                ignore=shutil.ignore_patterns("__pycache__", "*.pyc", ".git*"),
+            )
+            # If hooks directory was copied, remove hooks.json inside it to avoid duplicate configuration
+            if item_lower == "hooks":
+                nested_hooks_json = dest_aux / "hooks.json"
+                if nested_hooks_json.exists():
+                    try:
+                        nested_hooks_json.unlink()
+                    except OSError:
+                        pass
 
-                summary["auxiliary_dirs_copied"].append(item.name)
-                if item_lower == "bin":
-                    warnings.append(
-                        f"{item.name}/ copied, but Antigravity does not put it on PATH: calls to its "
-                        f"executables by bare name will fail; use the full path ({dest_aux.as_posix()}/<file>)."
-                    )
-            except Exception as e:
-                summary["warnings"].append(f"Failed to copy auxiliary directory '{item.name}': {e}")
+            summary["auxiliary_dirs_copied"].append(item.name)
+            if item_lower == "bin":
+                warnings.append(
+                    f"{item.name}/ copied, but Antigravity does not put it on PATH: calls to its "
+                    f"executables by bare name will fail; use the full path ({dest_aux.as_posix()}/<file>)."
+                )
+        except Exception as e:
+            summary["warnings"].append(f"Failed to copy auxiliary directory '{item.name}': {e}")
 
     # 10. Copy auxiliary root documentation / license files
     auxiliary_files = ["README.md", "LICENSE", "LICENSE.md", "CHANGELOG.md"]
