@@ -438,9 +438,13 @@ def convert_commands_directory(
                     md_file, dest_skills_dir, custom_name=name, overwrite=overwrite, warnings=warnings
                 )
                 converted.append(skill_path)
-            except FileExistsError:
+            except FileExistsError as e:
                 # Safe skip when overwrite is False
-                continue
+                if warnings is not None:
+                    rel = md_file.relative_to(commands_dir).as_posix()
+                    warnings.append(
+                        f"Skipped existing skill from command {rel} (use --overwrite to replace): {e}"
+                    )
             except (ValueError, OSError) as e:
                 if failures is None:
                     raise

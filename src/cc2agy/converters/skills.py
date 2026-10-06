@@ -192,8 +192,9 @@ def migrate_skills_directory(
         try:
             res = migrate_skill_folder(item, dest_skills_dir, overwrite=overwrite, warnings=warnings)
             migrated.append(res)
-        except FileExistsError:
-            continue
+        except FileExistsError as e:
+            if warnings is not None:
+                warnings.append(f"Skipped existing skill from {item.name}/ (use --overwrite to replace): {e}")
         except (ValueError, OSError) as e:
             if failures is None:
                 raise

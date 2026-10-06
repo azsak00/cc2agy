@@ -255,8 +255,9 @@ def convert_agents_directory(
             )
             if result is not None:
                 converted.append(result)
-        except FileExistsError:
-            continue
+        except FileExistsError as e:
+            rel = md_file.relative_to(agents_dir).as_posix()
+            warnings.append(f"Skipped existing subagent from {rel} (use --overwrite to replace): {e}")
         except (ValueError, OSError) as e:
             if failures is None:
                 raise
