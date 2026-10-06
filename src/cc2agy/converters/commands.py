@@ -161,32 +161,54 @@ def adapt_prompt_arguments(body: str) -> str:
     return protected
 
 
-def _resolve_skill_name(meta: Dict[str, str], source_file: Path, custom_name: Optional[str] = None) -> str:
-    """Determine the canonical skill name for a command file."""
-    return sanitize_skill_name(custom_name or meta.get("name") or source_file.stem)
+def _resolve_skill_name(meta: Dict[str, str], default_name: str, custom_name: Optional[str] = None) -> str:
+    """Determine the canonical skill name for a command."""
+    return sanitize_skill_name(custom_name or meta.get("name") or default_name)
 
 
 def command_skill_name(source_file: Path) -> str:
     """Return the skill name a command file converts to (same rule as convert_command_file)."""
     meta, _ = parse_frontmatter(source_file.read_text(encoding="utf-8"))
-    return _resolve_skill_name(meta, source_file)
+    return _resolve_skill_name(meta, source_file.stem)
 
 
 def convert_command_file(
     source_file: Path,
     dest_skills_dir: Path,
     custom_name: Optional[str] = None,
-    overwrite: bool = False
+    overwrite: bool = False,
+    description: Optional[str] = None,
 ) -> Path:
     """Convert a single Claude Code command file into an Antigravity Skill folder."""
-    raw_content = source_file.read_text(encoding="utf-8")
+    return convert_command_text(
+        source_file.read_text(encoding="utf-8"),
+        dest_skills_dir,
+        default_name=source_file.stem,
+        custom_name=custom_name,
+        overwrite=overwrite,
+        description=description,
+    )
+
+
+def convert_command_text(
+    raw_content: str,
+    dest_skills_dir: Path,
+    default_name: str,
+    custom_name: Optional[str] = None,
+    overwrite: bool = False,
+    description: Optional[str] = None,
+) -> Path:
+    """Convert Claude Code command Markdown (from a file or inline in plugin.json) into a Skill folder.
+
+    `description`, when given, takes precedence over the frontmatter and body.
+    """
     meta, raw_body = parse_frontmatter(raw_content)
 
     # Determine canonical skill name
-    skill_name = _resolve_skill_name(meta, source_file, custom_name)
+    skill_name = _resolve_skill_name(meta, default_name, custom_name)
 
     # Generate description and adapt body
-    description = extract_description(raw_body, meta, skill_name)
+    description = description or extract_description(raw_body, meta, skill_name)
     body = adapt_prompt_arguments(raw_body)
 
     # Target folder and SKILL.md path

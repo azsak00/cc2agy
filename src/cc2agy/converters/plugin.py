@@ -9,12 +9,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from cc2agy.converters.commands import (
+    command_skill_name,
     convert_command_file,
+    convert_command_text,
     convert_commands_directory,
     sanitize_skill_name,
 )
-from cc2agy.converters.hooks import convert_hooks_file
-from cc2agy.converters.mcp import convert_mcp_file
+from cc2agy.converters.hooks import write_hooks_data
+from cc2agy.converters.mcp import extract_servers_dict, write_mcp_data
 from cc2agy.converters.rules import convert_rules_file
 from cc2agy.converters.skills import migrate_skills_directory
 from cc2agy.detector import CLAUDE_PLUGIN_DIR, _find_case_insensitive
@@ -52,6 +54,112 @@ def sanitize_skill_content(content: str) -> str:
 def find_plugin_manifest(source_dir: Path) -> Optional[Path]:
     """Locate the Claude Code plugin manifest (.claude-plugin/plugin.json only)."""
     return _find_case_insensitive(source_dir / CLAUDE_PLUGIN_DIR, "plugin.json")
+
+
+def _manifest_entries(value: Any) -> List[Any]:
+    """Normalize a plugin.json component field (single value or array) into a list."""
+    if value is None:
+        return []
+    return value if isinstance(value, list) else [value]
+
+
+def _resolve_component_path(source_dir: Path, raw: Any, field: str, warnings: List[str]) -> Optional[Path]:
+    """Resolve a plugin.json component path relative to the plugin root.
+
+    Mirrors Claude Code's rules: the path must stay inside the plugin folder and exist.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        warnings.append(f"plugin.json '{field}': unsupported entry {raw!r}; skipped.")
+        return None
+    candidate = (source_dir / raw).resolve()
+    if not candidate.is_relative_to(source_dir):
+        warnings.append(f"plugin.json '{field}': path '{raw}' escapes the plugin folder; skipped.")
+        return None
+    if not candidate.exists():
+        warnings.append(f"plugin.json '{field}': path '{raw}' not found; skipped.")
+        return None
+    return candidate
+
+
+def _read_json(path: Path) -> Any:
+    """Load a JSON file, raising ValueError that names the file on any read/parse failure."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError) as e:
+        raise ValueError(f"Failed to read/parse JSON from {path}: {e}") from e
+
+
+def _merge_hook_events(
+    hook_events: Dict[str, List[Any]], raw: Any, origin: str, warnings: List[str]
+) -> None:
+    """Append the event handlers in `raw` (with or without a "hooks" wrapper) to hook_events."""
+    events = raw.get("hooks", raw) if isinstance(raw, dict) else None
+    if not isinstance(events, dict):
+        warnings.append(f"Hooks in {origin} are not an object of events; skipped.")
+        return
+    for event, items in events.items():
+        if isinstance(items, list):
+            hook_events.setdefault(event, []).extend(items)
+        else:
+            warnings.append(f"Hook event '{event}' in {origin} does not contain a list of handlers.")
+
+
+def _convert_declared_commands(
+    declared: Any,
+    source_dir: Path,
+    skills_dest: Path,
+    overwrite: bool,
+    skip_names: Set[str],
+    warnings: List[str],
+) -> int:
+    """Convert the commands declared in plugin.json (path, array of paths, or name map)."""
+    converted = 0
+
+    if isinstance(declared, dict):
+        for name, spec in declared.items():
+            if sanitize_skill_name(name) in skip_names:
+                continue
+            if not isinstance(spec, dict):
+                warnings.append(f"plugin.json 'commands.{name}' is not an object; skipped.")
+                continue
+            description = spec.get("description") if isinstance(spec.get("description"), str) else None
+            try:
+                if isinstance(spec.get("content"), str):
+                    convert_command_text(
+                        spec["content"], skills_dest, default_name=name,
+                        custom_name=name, overwrite=overwrite, description=description,
+                    )
+                elif "source" in spec:
+                    path = _resolve_component_path(source_dir, spec["source"], f"commands.{name}", warnings)
+                    if path is None:
+                        continue
+                    convert_command_file(
+                        path, skills_dest, custom_name=name, overwrite=overwrite, description=description
+                    )
+                else:
+                    warnings.append(f"plugin.json 'commands.{name}' needs 'source' or 'content'; skipped.")
+                    continue
+                converted += 1
+            except FileExistsError:
+                continue
+        return converted
+
+    for raw in _manifest_entries(declared):
+        path = _resolve_component_path(source_dir, raw, "commands", warnings)
+        if path is None:
+            continue
+        if path.is_dir():
+            converted += len(
+                convert_commands_directory(path, skills_dest, overwrite=overwrite, skip_names=skip_names)
+            )
+        elif command_skill_name(path) not in skip_names:
+            try:
+                convert_command_file(path, skills_dest, overwrite=overwrite)
+                converted += 1
+            except FileExistsError:
+                continue
+    return converted
 
 
 def convert_plugin(
@@ -141,25 +249,46 @@ def convert_plugin(
     skills_dest = target_plugin_dir / "skills"
     skills_dest.mkdir(parents=True, exist_ok=True)
 
-    # Migrate modular skills first (prioritize rich, multi-file modular skill definitions)
-    modular_skill_names: Set[str] = set()
+    warnings: List[str] = summary["warnings"]
+
+    # Migrate modular skills first (prioritize rich, multi-file modular skill definitions).
+    # plugin.json "skills" adds directories to the default skills/ scan.
+    skill_dirs: List[Path] = []
     source_skills_dir = source_dir / "skills"
     if not source_skills_dir.exists():
         source_skills_dir = source_dir / ".claude" / "skills"
     if source_skills_dir.exists() and source_skills_dir.is_dir():
-        sk_results = migrate_skills_directory(source_skills_dir, skills_dest, overwrite=overwrite)
-        summary["skills_migrated"] += len(sk_results)
-        modular_skill_names = {r.parent.name if r.is_file() else r.name for r in sk_results}
+        skill_dirs.append(source_skills_dir.resolve())
+    for raw in _manifest_entries(manifest_data.get("skills")):
+        path = _resolve_component_path(source_dir, raw, "skills", warnings)
+        if path is None:
+            continue
+        if not path.is_dir():
+            warnings.append(f"plugin.json 'skills': '{raw}' is not a directory; skipped.")
+        elif path not in skill_dirs:
+            skill_dirs.append(path)
 
-    # Convert commands, honoring overwrite, but never replacing a modular skill of the same name
-    commands_dir = source_dir / "commands"
-    if not commands_dir.exists():
-        commands_dir = source_dir / ".claude" / "commands"
-    if commands_dir.exists() and commands_dir.is_dir():
-        cmd_results = convert_commands_directory(
-            commands_dir, skills_dest, overwrite=overwrite, skip_names=modular_skill_names
+    modular_skill_names: Set[str] = set()
+    for s_dir in skill_dirs:
+        sk_results = migrate_skills_directory(s_dir, skills_dest, overwrite=overwrite)
+        summary["skills_migrated"] += len(sk_results)
+        modular_skill_names.update(r.parent.name if r.is_file() else r.name for r in sk_results)
+
+    # Convert commands, honoring overwrite, but never replacing a modular skill of the same name.
+    # plugin.json "commands" replaces the default commands/ scan.
+    if "commands" in manifest_data:
+        summary["skills_migrated"] += _convert_declared_commands(
+            manifest_data["commands"], source_dir, skills_dest, overwrite, modular_skill_names, warnings
         )
-        summary["skills_migrated"] += len(cmd_results)
+    else:
+        commands_dir = source_dir / "commands"
+        if not commands_dir.exists():
+            commands_dir = source_dir / ".claude" / "commands"
+        if commands_dir.exists() and commands_dir.is_dir():
+            cmd_results = convert_commands_directory(
+                commands_dir, skills_dest, overwrite=overwrite, skip_names=modular_skill_names
+            )
+            summary["skills_migrated"] += len(cmd_results)
 
     # Sanitize ${CLAUDE_PLUGIN_ROOT} in all SKILL.md files
     for skill_file in skills_dest.rglob("*.md"):
@@ -189,43 +318,75 @@ def convert_plugin(
                 summary["warnings"].append("Rules file already exists in plugin; skipped.")
             break
 
-    # 6. Migrate MCP config to mcp_config.json
+    # 6. Migrate MCP config to mcp_config.json: the default file first, then plugin.json
+    # "mcpServers" entries in order (a server name declared later replaces an earlier one)
     mcp_candidates = [
         source_dir / ".mcp.json",
         source_dir / "mcp.json",
         source_dir / ".claude.json",
         source_dir / ".claude" / "mcp.json",
     ]
+    mcp_servers: Dict[str, Any] = {}
+    mcp_sources = 0
     for m_cand in mcp_candidates:
         if m_cand.exists() and m_cand.is_file():
-            try:
-                res, w = convert_mcp_file(m_cand, target_plugin_dir, overwrite=overwrite)
-                summary["mcp_migrated"] += 1
-                summary["warnings"].extend(w)
-            except FileExistsError:
-                summary["warnings"].append("MCP config already exists in plugin; skipped.")
+            mcp_servers.update(extract_servers_dict(_read_json(m_cand)))
+            mcp_sources += 1
             break
+    for raw in _manifest_entries(manifest_data.get("mcpServers")):
+        if isinstance(raw, dict):
+            mcp_servers.update(extract_servers_dict(raw))
+            mcp_sources += 1
+        elif isinstance(raw, str) and raw.lower().endswith((".mcpb", ".dxt")):
+            warnings.append(f"plugin.json 'mcpServers': MCP bundle '{raw}' cannot be converted; skipped.")
+        else:
+            path = _resolve_component_path(source_dir, raw, "mcpServers", warnings)
+            if path is not None:
+                mcp_servers.update(extract_servers_dict(_read_json(path)))
+                mcp_sources += 1
+    if mcp_sources:
+        try:
+            res, w = write_mcp_data({"mcpServers": mcp_servers}, target_plugin_dir, overwrite=overwrite)
+            summary["mcp_migrated"] += 1
+            warnings.extend(w)
+        except FileExistsError:
+            warnings.append("MCP config already exists in plugin; skipped.")
 
-    # 7. Migrate Hooks to hooks.json
+    # 7. Migrate Hooks to hooks.json: the default file merged with plugin.json "hooks"
+    # entries (file paths carry a top-level "hooks" wrapper; inline objects are the event map)
     hooks_candidates = [
         source_dir / "hooks" / "hooks.json",
         source_dir / "hooks.json",
         source_dir / ".claude" / "hooks.json",
     ]
+    hook_events: Dict[str, List[Any]] = {}
+    hook_sources = 0
     for h_cand in hooks_candidates:
         if h_cand.exists() and h_cand.is_file():
-            try:
-                res, w = convert_hooks_file(
-                    h_cand,
-                    target_plugin_dir,
-                    plugin_name=plugin_name,
-                    overwrite=overwrite,
-                )
-                summary["hooks_migrated"] += 1
-                summary["warnings"].extend(w)
-            except FileExistsError:
-                summary["warnings"].append("Hooks file already exists in plugin; skipped.")
+            _merge_hook_events(hook_events, _read_json(h_cand), h_cand.name, warnings)
+            hook_sources += 1
             break
+    for raw in _manifest_entries(manifest_data.get("hooks")):
+        if isinstance(raw, dict):
+            _merge_hook_events(hook_events, raw, "plugin.json", warnings)
+            hook_sources += 1
+        else:
+            path = _resolve_component_path(source_dir, raw, "hooks", warnings)
+            if path is not None:
+                _merge_hook_events(hook_events, _read_json(path), path.name, warnings)
+                hook_sources += 1
+    if hook_sources:
+        try:
+            res, w = write_hooks_data(
+                hook_events,
+                target_plugin_dir,
+                plugin_name=plugin_name,
+                overwrite=overwrite,
+            )
+            summary["hooks_migrated"] += 1
+            warnings.extend(w)
+        except FileExistsError:
+            warnings.append("Hooks file already exists in plugin; skipped.")
 
     # 8. Copy auxiliary directories (scripts, templates, espec, agents, etc.)
     for item in sorted(source_dir.iterdir()):

@@ -168,6 +168,123 @@ class TestPluginConverter(unittest.TestCase):
             self.assertNotIn("FROM COMMAND", content)
             self.assertEqual(summary["skills_migrated"], 1)
 
+    def _make_plugin(self, root: Path, manifest: dict) -> Path:
+        plugin = root / "plug"
+        (plugin / ".claude-plugin").mkdir(parents=True)
+        (plugin / ".claude-plugin" / "plugin.json").write_text(json.dumps(manifest), encoding="utf-8")
+        return plugin
+
+    def test_manifest_inline_mcp_servers_merge_with_mcp_json(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            plugin = self._make_plugin(tmp_path, {
+                "name": "plug",
+                "mcpServers": [
+                    {"fs": {"command": "npx", "args": ["fs-v2"]}},
+                    "./config/extra-mcp.json",
+                    "./bundle.mcpb",
+                ],
+            })
+            (plugin / ".mcp.json").write_text(
+                json.dumps({"mcpServers": {"fs": {"command": "npx", "args": ["fs-v1"]},
+                                           "git": {"command": "git-mcp"}}}),
+                encoding="utf-8",
+            )
+            (plugin / "config").mkdir()
+            (plugin / "config" / "extra-mcp.json").write_text(
+                json.dumps({"api": {"url": "https://api.example.com/mcp"}}), encoding="utf-8"
+            )
+
+            plugin_dir, summary = convert_plugin(plugin, tmp_path / "out")
+
+            servers = json.loads((plugin_dir / "mcp_config.json").read_text(encoding="utf-8"))["mcpServers"]
+            self.assertEqual(set(servers), {"fs", "git", "api"})
+            self.assertEqual(servers["fs"]["args"], ["fs-v2"])  # declared later replaces .mcp.json
+            self.assertEqual(servers["api"]["serverUrl"], "https://api.example.com/mcp")
+            self.assertEqual(summary["mcp_migrated"], 1)
+            self.assertTrue(any("bundle.mcpb" in w for w in summary["warnings"]))
+
+    def test_manifest_hooks_merge_with_default_hooks_file(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            plugin = self._make_plugin(tmp_path, {
+                "name": "plug",
+                "hooks": [
+                    "./config/extra-hooks.json",
+                    {"PostToolUse": [{"matcher": "Write", "hooks": [
+                        {"type": "command", "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/format.sh"}]}]},
+                ],
+            })
+            (plugin / "hooks").mkdir()
+            (plugin / "hooks" / "hooks.json").write_text(json.dumps({"hooks": {"Stop": [
+                {"hooks": [{"type": "command", "command": "echo stop"}]}]}}), encoding="utf-8")
+            (plugin / "config").mkdir()
+            (plugin / "config" / "extra-hooks.json").write_text(json.dumps({"hooks": {"PreToolUse": [
+                {"matcher": "Bash", "hooks": [{"type": "command", "command": "check.sh"}]}]}}), encoding="utf-8")
+
+            plugin_dir, summary = convert_plugin(plugin, tmp_path / "out")
+
+            events = json.loads((plugin_dir / "hooks.json").read_text(encoding="utf-8"))["plug-hooks"]
+            self.assertEqual(set(events), {"Stop", "PreToolUse", "PostToolUse"})
+            self.assertEqual(events["PreToolUse"][0]["matcher"], "run_command")
+            self.assertEqual(events["PostToolUse"][0]["matcher"], "write_to_file")
+            self.assertEqual(events["PostToolUse"][0]["hooks"][0]["command"], '"."/scripts/format.sh')
+            self.assertEqual(summary["hooks_migrated"], 1)
+
+    def test_manifest_commands_map_and_paths_replace_default_folder(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            plugin = self._make_plugin(tmp_path, {
+                "name": "plug",
+                "commands": {
+                    "status": {"source": "./custom/status.md", "description": "Show deployment status"},
+                    "about": {"content": "Explain what this plugin provides.", "description": "Describe plugin"},
+                    "outside": {"source": "../escape.md"},
+                },
+            })
+            (plugin / "custom").mkdir()
+            (plugin / "custom" / "status.md").write_text("# Status\nCheck the deploy.", encoding="utf-8")
+            (plugin / "commands").mkdir()
+            (plugin / "commands" / "ignored.md").write_text("# Ignored\nNot listed.", encoding="utf-8")
+            (tmp_path / "escape.md").write_text("# Escape", encoding="utf-8")
+
+            plugin_dir, summary = convert_plugin(plugin, tmp_path / "out")
+
+            skills = plugin_dir / "skills"
+            status = (skills / "status" / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn('description: "Show deployment status"', status)
+            self.assertIn("Check the deploy.", status)
+            about = (skills / "about" / "SKILL.md").read_text(encoding="utf-8")
+            self.assertIn('description: "Describe plugin"', about)
+            self.assertIn("Explain what this plugin provides.", about)
+            self.assertFalse((skills / "ignored").exists())
+            self.assertFalse((skills / "outside").exists())
+            self.assertTrue(any("escapes the plugin folder" in w for w in summary["warnings"]))
+            self.assertEqual(summary["skills_migrated"], 2)
+
+    def test_manifest_commands_path_list_and_extra_skills_dir(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            plugin = self._make_plugin(tmp_path, {
+                "name": "plug",
+                "commands": ["./commands/", "./extras/deploy.md"],
+                "skills": ["./extra-skills/"],
+            })
+            (plugin / "commands").mkdir()
+            (plugin / "commands" / "hello.md").write_text("# Hello\nHi.", encoding="utf-8")
+            (plugin / "extras").mkdir()
+            (plugin / "extras" / "deploy.md").write_text("# Deploy\nShip it.", encoding="utf-8")
+            (plugin / "skills" / "base").mkdir(parents=True)
+            (plugin / "skills" / "base" / "SKILL.md").write_text("---\nname: base\n---\nBase", encoding="utf-8")
+            (plugin / "extra-skills" / "bonus").mkdir(parents=True)
+            (plugin / "extra-skills" / "bonus" / "SKILL.md").write_text("---\nname: bonus\n---\nBonus", encoding="utf-8")
+
+            plugin_dir, summary = convert_plugin(plugin, tmp_path / "out")
+
+            for name in ("hello", "deploy", "base", "bonus"):
+                self.assertTrue((plugin_dir / "skills" / name / "SKILL.md").exists(), name)
+            self.assertEqual(summary["skills_migrated"], 4)
+
     def test_cli_convert_plugin_autodetect(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)

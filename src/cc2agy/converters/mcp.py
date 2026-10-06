@@ -9,7 +9,8 @@ Google Antigravity defines MCP configurations in `mcp_config.json`:
 - Plugin: `plugins/<plugin_name>/mcp_config.json`
 - Schema requires a root "mcpServers" object mapping server IDs to configs.
 - Stdio transport: requires "command" (string), optional "args" (list[str]), optional "env" (dict).
-- SSE transport: requires "serverUrl" (string starting with http:// or https://).
+- SSE transport: requires "serverUrl" (string starting with http:// or https://),
+  optional "headers" (dict) for authentication.
 """
 
 from __future__ import annotations
@@ -17,6 +18,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+
+# Header names that usually carry credentials
+SECRET_HEADER_HINTS = ("authorization", "key", "token", "secret", "password")
 
 
 def extract_servers_dict(raw_data: Any) -> Dict[str, Any]:
@@ -63,6 +67,37 @@ def normalize_server_entry(server_id: str, raw_config: Dict[str, Any]) -> Tuple[
         if not (server_url.startswith("http://") or server_url.startswith("https://")):
             warnings.append(f"Server '{server_id}' SSE url '{server_url}' does not start with http:// or https://.")
         normalized["serverUrl"] = server_url
+
+        # Authentication headers (Antigravity documents 'headers' for remote servers)
+        headers = raw_config.get("headers")
+        if headers is not None:
+            if isinstance(headers, dict):
+                normalized["headers"] = {str(k): str(v) for k, v in headers.items()}
+                for k, v in normalized["headers"].items():
+                    if "${" in v:
+                        warnings.append(
+                            f"Server '{server_id}' header '{k}' uses ${{...}} variable expansion. "
+                            "The Antigravity documentation does not state that variables are expanded, "
+                            "so the literal text may be sent; replace it with the real value if authentication fails."
+                        )
+                    elif any(sec in k.lower() for sec in SECRET_HEADER_HINTS):
+                        warnings.append(
+                            f"Server '{server_id}' header '{k}' appears to contain a plaintext secret. "
+                            "Keep this mcp_config.json out of version control."
+                        )
+            else:
+                warnings.append(f"Server '{server_id}' 'headers' must be a dictionary.")
+
+        if "headersHelper" in raw_config:
+            warnings.append(
+                f"Server '{server_id}' 'headersHelper' has no Antigravity equivalent and was not converted; "
+                "set the resulting headers manually in 'headers'."
+            )
+        if "oauth" in raw_config:
+            warnings.append(
+                f"Server '{server_id}' Claude Code 'oauth' settings were not converted; "
+                "Antigravity expects 'oauth' with 'clientId' and 'clientSecret', configure it manually."
+            )
 
     # 2. Detect Stdio transport
     command = raw_config.get("command")
@@ -149,6 +184,16 @@ def convert_mcp_file(
     except json.JSONDecodeError as e:
         raise ValueError(f"Failed to parse source MCP file as JSON: {e}") from e
 
+    return write_mcp_data(raw_data, dest_dir, custom_filename=custom_filename, overwrite=overwrite)
+
+
+def write_mcp_data(
+    raw_data: Any,
+    dest_dir: Path,
+    custom_filename: str = "mcp_config.json",
+    overwrite: bool = False
+) -> Tuple[Path, List[str]]:
+    """Convert already-loaded Claude Code MCP data and write it as an Antigravity mcp_config.json."""
     config, warnings = convert_mcp_config(raw_data)
 
     dest_dir.mkdir(parents=True, exist_ok=True)

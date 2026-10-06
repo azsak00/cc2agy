@@ -193,6 +193,22 @@ def convert_hooks_file(
     except Exception as e:
         raise ValueError(f"Failed to read/parse hooks JSON from {source_path}: {e}")
 
+    return write_hooks_data(raw_data, dest_dir, plugin_name=plugin_name, overwrite=overwrite)
+
+
+def write_hooks_data(
+    raw_data: Dict[str, Any],
+    dest_dir: Path,
+    plugin_name: str = "plugin",
+    overwrite: bool = False,
+) -> Tuple[Path, List[str]]:
+    """Convert already-loaded Claude Code hooks data and write it to dest_dir/hooks.json."""
+    dest_dir = dest_dir.resolve()
+    dest_file = dest_dir / "hooks.json"
+
+    if dest_file.exists() and not overwrite:
+        raise FileExistsError(f"Destination hooks file already exists: {dest_file}")
+
     converted_config, warnings = convert_hooks_data(raw_data, plugin_name=plugin_name)
 
     dest_dir.mkdir(parents=True, exist_ok=True)

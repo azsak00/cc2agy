@@ -147,6 +147,39 @@ class TestMCPConverter(unittest.TestCase):
         self.assertEqual(norm.get("serverUrl"), "https://mcp.example.com/sse")
         self.assertNotIn("url", norm)
 
+    def test_remote_server_headers_are_preserved(self):
+        raw_cfg = {
+            "type": "http",
+            "url": "https://api.example.com/mcp",
+            "headers": {"Authorization": "Bearer abc123", "X-Client": "cc2agy"},
+        }
+        norm, warnings = normalize_server_entry("api", raw_cfg)
+        self.assertEqual(
+            norm,
+            {
+                "serverUrl": "https://api.example.com/mcp",
+                "headers": {"Authorization": "Bearer abc123", "X-Client": "cc2agy"},
+            },
+        )
+        self.assertTrue(any("'Authorization'" in w and "plaintext secret" in w for w in warnings))
+        self.assertFalse(any("'X-Client'" in w for w in warnings))
+
+    def test_remote_server_header_variable_and_unsupported_auth_warn(self):
+        raw_cfg = {
+            "type": "http",
+            "url": "https://api.example.com/mcp",
+            "headers": {"Authorization": "Bearer ${API_KEY}"},
+            "headersHelper": "./get-token.sh",
+            "oauth": {"clientId": "abc", "callbackPort": 8080},
+        }
+        norm, warnings = normalize_server_entry("api", raw_cfg)
+        self.assertEqual(norm["headers"], {"Authorization": "Bearer ${API_KEY}"})
+        self.assertNotIn("headersHelper", norm)
+        self.assertNotIn("oauth", norm)
+        self.assertTrue(any("variable expansion" in w for w in warnings))
+        self.assertTrue(any("'headersHelper'" in w for w in warnings))
+        self.assertTrue(any("'oauth'" in w for w in warnings))
+
     def test_plaintext_secret_warning(self):
         raw_cfg = {
             "command": "python",
