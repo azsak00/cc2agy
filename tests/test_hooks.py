@@ -377,6 +377,42 @@ class TestHookRunnerOutput(unittest.TestCase):
         output, _ = self.run_echo("stop", {"conversationId": "stop-" + uuid.uuid4().hex}, "", code=2)
         self.assertEqual(output["decision"], "continue")
 
+    def run_raw(self, mode, payload):
+        """Runs the echo hook (prints 'ctx', exit 0); returns the runner's stdout and stderr."""
+        spec = {"mode": mode, "command": sys.executable, "args": ["-c", self.ECHO_HOOK, "ctx", "0"], "env": {}}
+        encoded = base64.urlsafe_b64encode(json.dumps(spec).encode("utf-8")).decode("ascii")
+        result = subprocess.run([sys.executable, str(self.runner), encoded],
+                                input=json.dumps(payload), capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.strip(), result.stderr
+
+    def test_session_start_runs_once_per_conversation_even_when_invocation_num_restarts(self):
+        # Seen in agy 1.2.13: after a subagent returns, the main conversation starts again at invocationNum 0
+        payload = {"conversationId": "once-" + uuid.uuid4().hex, "invocationNum": 0}
+        self.assertEqual(json.loads(self.run_raw("once", payload)[0]), {"injectSteps": [{"ephemeralMessage": "ctx"}]})
+        self.assertEqual(self.run_raw("once", payload), ("{}", ""))
+
+    def test_session_start_and_stop_skip_subagent_conversations(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            brain = Path(tmp_dir) / "brain"
+            parent, child = "main-" + uuid.uuid4().hex, "sub-" + uuid.uuid4().hex
+            link = brain / parent / ".system_generated" / "subagents"
+            link.mkdir(parents=True)
+            (link / f"{child}.json").write_text(json.dumps({"conversationId": child}), encoding="utf-8")
+            sub = {"conversationId": child, "artifactDirectoryPath": (brain / child).as_posix(), "invocationNum": 0}
+            self.assertEqual(self.run_raw("once", sub), ("{}", ""))
+            self.assertEqual(self.run_raw("stop", sub), ("", ""))
+            main = {"conversationId": parent, "artifactDirectoryPath": (brain / parent).as_posix(), "invocationNum": 0}
+            self.assertEqual(json.loads(self.run_raw("once", main)[0]), {"injectSteps": [{"ephemeralMessage": "ctx"}]})
+            self.assertIn('"hook_event_name": "Stop"', self.run_raw("stop", main)[1])
+
+    def test_conversion_warns_that_subagent_detection_is_undocumented(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            _, warnings = convert_hooks_data(
+                {"SessionStart": [{"hooks": [{"command": "echo a"}]}], "Stop": [{"hooks": [{"command": "echo b"}]}]},
+                helper_dir=Path(tmp_dir))
+        self.assertEqual(sum("undocumented Antigravity file" in w for w in warnings), 2)
+
     def test_context_hooks_read_additional_context_and_need_exit_zero(self):
         context = json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": "Use pnpm."}})
         self.assertEqual(self.run_hook("once", context)[0], {"injectSteps": [{"ephemeralMessage": "Use pnpm."}]})
