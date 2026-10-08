@@ -17,7 +17,7 @@ from cc2agy.converters.commands import (
     convert_commands_directory,
     sanitize_skill_name,
 )
-from cc2agy.converters.hooks import write_hooks_data
+from cc2agy.converters.hooks import SETTINGS_FILES, write_hooks_data
 from cc2agy.converters.mcp import extract_servers_dict, write_mcp_data
 from cc2agy.converters.skills import migrate_root_skill, migrate_skills_directory
 from cc2agy.converters.variables import (
@@ -482,6 +482,23 @@ def convert_plugin(
             warnings.extend(w)
         except FileExistsError:
             warnings.append("Hooks file already exists in plugin; skipped.")
+
+    # Hooks in .claude/settings*.json are project settings, not plugin hooks (those live in
+    # hooks/hooks.json and plugin.json "hooks"), so they are reported, not converted
+    for fname in SETTINGS_FILES:
+        settings_file = locations.find_case_insensitive(source_dir / ".claude", fname)
+        if settings_file is None:
+            continue
+        try:
+            has_hooks = "hooks" in json.loads(settings_file.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError, TypeError):
+            has_hooks = True
+        if has_hooks:
+            rel = settings_file.relative_to(source_dir).as_posix()
+            warnings.append(
+                f"{rel} hooks not converted: a plugin's hooks come from hooks/hooks.json and plugin.json "
+                "'hooks'; Claude Code does not load them from a settings file inside the plugin."
+            )
 
     # 8. Convert subagents into agents/. plugin.json "agents" (.md files only) replaces the
     # default scan of every agent folder, and its files load without subfolder names.

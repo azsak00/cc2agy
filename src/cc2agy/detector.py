@@ -150,7 +150,17 @@ class ClaudeProjectInfo:
         if self.plugin_manifest:
             lines.append(f"    - Plugin Manifest at: {self.plugin_manifest.name}")
 
-        if self.has_hooks:
+        if self.has_hooks and self.is_plugin:
+            # A plugin's hooks come from hooks.json; its .claude/settings*.json are not loaded
+            plugin_hooks = [f for f in self.hook_sources if f not in self.settings_files]
+            if plugin_hooks:
+                lines.append(f"    - Lifecycle Hooks at: {', '.join(f.name for f in plugin_hooks)}")
+            for f in self.settings_files:
+                if f.exists() and "hooks" in _settings_hook_keys(f):
+                    lines.append(
+                        f"    - Hooks in .claude/{f.name} (not converted: Claude Code does not load them in a plugin)"
+                    )
+        elif self.has_hooks:
             lines.append(f"    - Lifecycle Hooks at: {', '.join(f.name for f in self.hook_sources)}")
 
         if self.has_agents:
