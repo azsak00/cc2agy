@@ -16,6 +16,7 @@ Google Antigravity defines MCP configurations in `mcp_config.json`:
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -24,6 +25,32 @@ from cc2agy.converters.variables import PluginVariables, standalone_variables, s
 
 # Header names that usually carry credentials
 SECRET_HEADER_HINTS = ("authorization", "key", "token", "secret", "password")
+
+# Claude Code's environment variable expansion in MCP configs: ${VAR} and ${VAR:-default}
+ENV_REFERENCE_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}")
+# Claude Code variables the conversion already resolves or reports on its own
+HANDLED_VARIABLES = {"CLAUDE_PLUGIN_ROOT", "CLAUDE_PLUGIN_DATA", "CLAUDE_PROJECT_DIR"}
+
+
+def _warn_env_references(server_id: str, normalized: Dict[str, Any], warnings: List[str]) -> None:
+    """Warn about each field still holding ${VAR} or ${VAR:-default}. Antigravity passes that text
+    unchanged (seen in the agy CLI 1.3.0), and expanding it here would write secrets into the file."""
+    fields: List[Tuple[str, Any]] = [
+        ("'command'", normalized.get("command")),
+        ("'args'", " ".join(normalized.get("args", []))),
+    ]
+    fields += [(f"env '{k}'", v) for k, v in normalized.get("env", {}).items()]
+    fields.append(("'url'", normalized.get("serverUrl")))
+    fields += [(f"header '{k}'", v) for k, v in normalized.get("headers", {}).items()]
+    for label, value in fields:
+        names = [n for n in ENV_REFERENCE_RE.findall(str(value or "")) if n not in HANDLED_VARIABLES]
+        if names:
+            refs = ", ".join(f"${{{n}}}" for n in dict.fromkeys(names))
+            warnings.append(
+                f"Server '{server_id}' {label} uses {refs}, Claude Code's environment variable expansion. "
+                "Antigravity passes this text unchanged instead of the variable's value; "
+                "replace it with the real value in mcp_config.json."
+            )
 
 
 def extract_servers_dict(raw_data: Any) -> Dict[str, Any]:
@@ -87,13 +114,8 @@ def normalize_server_entry(
             if isinstance(headers, dict):
                 normalized["headers"] = {str(k): resolve(v) for k, v in headers.items()}
                 for k, v in normalized["headers"].items():
-                    if "${" in v:
-                        warnings.append(
-                            f"Server '{server_id}' header '{k}' uses ${{...}} variable expansion. "
-                            "The Antigravity documentation does not state that variables are expanded, "
-                            "so the literal text may be sent; replace it with the real value if authentication fails."
-                        )
-                    elif any(sec in k.lower() for sec in SECRET_HEADER_HINTS):
+                    # A header with ${VAR} is reported by _warn_env_references
+                    if "${" not in v and any(sec in k.lower() for sec in SECRET_HEADER_HINTS):
                         warnings.append(
                             f"Server '{server_id}' header '{k}' appears to contain a plaintext secret. "
                             "Keep this mcp_config.json out of version control."
@@ -135,7 +157,7 @@ def normalize_server_entry(
                         if not (val.startswith("$") or val.startswith("%")):
                             warnings.append(
                                 f"Server '{server_id}' environment variable '{k}' appears to contain a "
-                                f"plaintext secret. Consider using environment variable expansion."
+                                f"plaintext secret. Keep this mcp_config.json out of version control."
                             )
             else:
                 warnings.append(f"Server '{server_id}' 'env' must be a dictionary.")
@@ -152,6 +174,7 @@ def normalize_server_entry(
         warnings.append(f"Server '{server_id}' specifies neither 'command' (stdio) nor 'serverUrl' (sse).")
         return {}, warnings
 
+    _warn_env_references(server_id, normalized, warnings)
     return normalized, warnings
 
 
