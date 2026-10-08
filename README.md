@@ -213,6 +213,7 @@ Converting again with a newer cc2agy can change results. Skills, subagents and f
 - A `CLAUDE.md` in a plugin no longer becomes `rules/AGENTS.md`, since Claude Code does not load it in a plugin; the one at the plugin root is copied as it is. The `rules/AGENTS.md` of an earlier conversion stays active in the converted plugin until you delete it.
 - A `SKILL.md` at a plugin root is converted into a skill when Claude Code would load it (it used to be copied loose, or, with `"skills": ["./"]`, the whole plugin was copied into the skill folder). The loose `SKILL.md` and the old skill folder of an earlier conversion stay until you delete them.
 - A skill whose `name:` field differs from its folder name now takes the `name:` value, as in Claude Code (it used to take the folder name). The skill folder of an earlier conversion stays, still active, until you delete it.
+- In a plugin, a skill `name:` that already starts with the plugin's own prefix drops it, as Claude Code does not add the prefix again: `name: my-plugin:fancy` becomes the skill `fancy` (it used to become `my-pluginfancy`). The `skills/my-pluginfancy/` folder of an earlier conversion stays, still active, until you delete it.
 
 ---
 
@@ -316,6 +317,7 @@ Ao converter de novo com a versão atual, o que veio da conversão anterior cont
 - Um `CLAUDE.md` dentro de plugin deixou de virar `rules/AGENTS.md`, porque o Claude Code não o carrega num plugin; o da raiz do plugin é copiado como está. O `rules/AGENTS.md` de uma conversão anterior continua ativo no plugin convertido até ser apagado à mão.
 - Um `SKILL.md` na raiz de um plugin passou a virar skill quando o Claude Code o carregaria (antes era copiado solto, ou, com `"skills": ["./"]`, o plugin inteiro era copiado para dentro da pasta da skill). O `SKILL.md` solto e a pasta antiga da skill, de uma conversão anterior, ficam até serem apagados à mão.
 - Uma skill cujo campo `name:` difere do nome da pasta passou a levar o valor do `name:`, como no Claude Code (antes levava o nome da pasta). A pasta da skill de uma conversão anterior continua no destino, ainda ativa, até ser apagada à mão.
+- Num plugin, um `name:` de skill que já começa com o prefixo do próprio plugin perde esse prefixo, porque o Claude Code não o acrescenta de novo: `name: meu-plugin:fancy` vira a skill `fancy` (antes virava `meu-pluginfancy`). A pasta `skills/meu-pluginfancy/` de uma conversão anterior continua ativa até ser apagada à mão.
 
 ### Limitações
 

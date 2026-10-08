@@ -93,6 +93,17 @@ class ClaudeProjectInfo:
             or self.is_plugin
         )
 
+    def _plugin_prefix(self) -> Optional[str]:
+        """The plugin's namespace in Claude Code (manifest 'name', or the folder name), or None
+        outside a plugin."""
+        if not self.is_plugin:
+            return None
+        try:
+            name = json.loads(self.plugin_manifest.read_text(encoding="utf-8-sig")).get("name")
+        except (OSError, ValueError, AttributeError):
+            name = None
+        return str(name) if name else self.root_path.name
+
     def _command_name(self, cmd: Path) -> str:
         """Name a command file with its subfolders (commands/git/commit.md -> git-commit)."""
         for c_dir in self.commands_dirs:
@@ -127,12 +138,13 @@ class ClaudeProjectInfo:
             lines.append(f"    - MCP Server Config at: {self.mcp_file.name}")
 
         if self.has_skills:
+            prefix = self._plugin_prefix()
             if (self.skills_dir / "SKILL.md").exists() or (self.skills_dir / "skill.md").exists():
-                lines.append(f"    - Modular Skill: {skill_name_for(self.skills_dir)}")
+                lines.append(f"    - Modular Skill: {skill_name_for(self.skills_dir, plugin_name=prefix)}")
             else:
                 try:
                     skills_found = [
-                        skill_name_for(d) for d in sorted(self.skills_dir.iterdir())
+                        skill_name_for(d, plugin_name=prefix) for d in sorted(self.skills_dir.iterdir())
                         if d.is_dir() and ((d / "SKILL.md").exists() or (d / "skill.md").exists())
                     ]
                 except (PermissionError, OSError):

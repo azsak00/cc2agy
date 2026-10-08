@@ -115,10 +115,18 @@ def _find_skill_file(skill_dir: Path) -> Optional[Path]:
     return None
 
 
-def skill_name_for(skill_dir: Path, default_name: Optional[str] = None) -> str:
+def skill_name_for(
+    skill_dir: Path, default_name: Optional[str] = None, plugin_name: Optional[str] = None
+) -> str:
     """The name Claude Code gives a skill folder: its frontmatter 'name', or else the folder
-    name (default_name when given), normalized for Antigravity (lowercase, hyphens)."""
+    name (default_name when given), normalized for Antigravity (lowercase, hyphens).
+
+    In a plugin (plugin_name given), a 'name' that already starts with '<plugin_name>:' drops
+    that prefix, as Claude Code does not add it again: 'my-plugin:fancy' becomes 'fancy'.
+    """
     raw_name = _frontmatter_name(_find_skill_file(skill_dir))
+    if raw_name and plugin_name and raw_name.startswith(plugin_name + ":"):
+        raw_name = raw_name[len(plugin_name) + 1:].strip()
     return sanitize_skill_name(raw_name or default_name or skill_dir.name)
 
 
@@ -137,6 +145,7 @@ def migrate_skill_folder(
     overwrite: bool = False,
     warnings: Optional[List[str]] = None,
     claimed: Optional[Dict[str, str]] = None,
+    plugin_name: Optional[str] = None,
 ) -> Path:
     """Migrate an existing modular skill folder into the destination skills directory.
 
@@ -150,7 +159,7 @@ def migrate_skill_folder(
     if not source_skill_dir.exists() or not source_skill_dir.is_dir():
         raise FileNotFoundError(f"Source skill folder not found: {source_skill_dir}")
 
-    skill_name = skill_name_for(source_skill_dir)
+    skill_name = skill_name_for(source_skill_dir, plugin_name=plugin_name)
     folder_name = sanitize_skill_name(source_skill_dir.name)
     if skill_name != folder_name:
         warnings.append(
@@ -218,6 +227,7 @@ def migrate_root_skill(
     overwrite: bool = False,
     warnings: Optional[List[str]] = None,
     claimed: Optional[Dict[str, str]] = None,
+    plugin_name: Optional[str] = None,
 ) -> Path:
     """Convert the SKILL.md at a plugin root, which Claude Code loads as one skill, into
     dest_skills_dir/<name>/SKILL.md. The name is the frontmatter 'name', or default_name (the
@@ -230,7 +240,7 @@ def migrate_root_skill(
     with open(skill_file, "r", encoding="utf-8-sig", errors="replace", newline="") as f:
         content = f.read()
     skill_name = _claim_skill(
-        skill_name_for(skill_file.parent, default_name), skill_file, claimed, warnings
+        skill_name_for(skill_file.parent, default_name, plugin_name), skill_file, claimed, warnings
     )
 
     target_skill_dir = dest_skills_dir / skill_name
@@ -262,6 +272,7 @@ def migrate_skills_directory(
     failures: Optional[List[Tuple[Path, Exception]]] = None,
     warnings: Optional[List[str]] = None,
     claimed: Optional[Dict[str, str]] = None,
+    plugin_name: Optional[str] = None,
 ) -> List[Path]:
     """Scan and migrate all modular skills from a source directory.
 
@@ -295,7 +306,8 @@ def migrate_skills_directory(
     for item in candidates:
         try:
             res = migrate_skill_folder(
-                item, dest_skills_dir, overwrite=overwrite, warnings=warnings, claimed=claimed
+                item, dest_skills_dir, overwrite=overwrite, warnings=warnings, claimed=claimed,
+                plugin_name=plugin_name,
             )
             migrated.append(res)
         except FileExistsError as e:
